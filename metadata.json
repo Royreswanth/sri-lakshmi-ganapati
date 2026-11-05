@@ -1,0 +1,6 @@
+{
+  "name": "Sri Lakshmi Ganapati",
+  "description": "Private mobile-first village finance manager for weekly micro-lending collections, loan tracking, and village accounts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

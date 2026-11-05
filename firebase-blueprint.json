@@ -1,0 +1,94 @@
+{
+  "entities": {
+    "LenderBackup": {
+      "title": "Lender Backup",
+      "description": "Snapshot of LineBook Pro offline financial ledger for automated cloud backup and recovery.",
+      "type": "object",
+      "properties": {
+        "backupId": {
+          "type": "string",
+          "description": "Unique ID of the backup snapshot"
+        },
+        "lenderId": {
+          "type": "string",
+          "description": "Identifier of the lender / business"
+        },
+        "businessName": {
+          "type": "string",
+          "description": "Name of the lending business"
+        },
+        "exportedAt": {
+          "type": "string",
+          "description": "ISO timestamp of when the backup was created"
+        },
+        "version": {
+          "type": "string",
+          "description": "Application data schema version"
+        },
+        "villagesCount": {
+          "type": "number",
+          "description": "Number of villages included in the backup"
+        },
+        "borrowersCount": {
+          "type": "number",
+          "description": "Number of borrowers included in the backup"
+        },
+        "totalLent": {
+          "type": "number",
+          "description": "Total loan money circulating at the time of backup"
+        },
+        "dataJson": {
+          "type": "string",
+          "description": "Stringified complete ledger JSON payload"
+        },
+        "storageUrl": {
+          "type": "string",
+          "description": "Firebase Storage reference or URL"
+        }
+      },
+      "required": ["backupId", "lenderId", "exportedAt", "dataJson"]
+    },
+    "LenderProfile": {
+      "title": "Lender Profile",
+      "description": "User account for the micro-lender, including license validity and subscription tier.",
+      "type": "object",
+      "properties": {
+        "lenderId": {
+          "type": "string",
+          "description": "Unique lender ID"
+        },
+        "businessName": {
+          "type": "string",
+          "description": "Business brand name"
+        },
+        "phone": {
+          "type": "string",
+          "description": "Lender contact phone number"
+        },
+        "plan": {
+          "type": "string",
+          "description": "Subscription plan: 6months, 12months, custom"
+        },
+        "expiresAt": {
+          "type": "string",
+          "description": "License expiration date (ISO)"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Account registration date"
+        }
+      },
+      "required": ["lenderId", "businessName", "plan", "expiresAt"]
+    }
+  },
+  "firestore": {
+    "/lenders/{lenderId}/backups/{backupId}": {
+      "schema": { "$ref": "#/entities/LenderBackup" },
+      "description": "Cloud backup snapshots created automatically or manually by the lender."
+    },
+    "/lenders/{lenderId}": {
+      "schema": { "$ref": "#/entities/LenderProfile" },
+      "description": "Profile and license subscription data for each lender."
+    }
+  }
+}

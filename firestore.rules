@@ -1,0 +1,35 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Lender Profile
+    match /lenders/{lenderId} {
+      allow get: if isValidId(lenderId);
+      allow list: if isValidId(lenderId);
+      allow create, update: if isValidId(lenderId);
+      allow delete: if isValidId(lenderId) && (request.auth != null ? request.auth.uid == lenderId : true);
+
+      // Cloud Backups subcollection
+      match /backups/{backupId} {
+        allow get: if isValidId(backupId) && isValidId(lenderId);
+        allow list: if isValidId(lenderId);
+        allow create: if isValidId(backupId) && isValidId(lenderId)
+          && request.resource.data.dataJson is string
+          && request.resource.data.dataJson.size() < 5000000;
+        allow update, delete: if isValidId(backupId) && isValidId(lenderId);
+      }
+    }
+  }
+}
