@@ -86,7 +86,7 @@ export async function uploadCloudBackup(isAuto = false): Promise<{
     const backupRecord: CloudBackupRecord = {
       backupId,
       lenderId,
-      businessName: profile.businessName || "Sri Lakshmi Ganapati",
+      businessName: profile.businessName || "LineBook Pro",
       exportedAt,
       version: "3.5",
       villagesCount: villages.length,
@@ -106,7 +106,7 @@ export async function uploadCloudBackup(isAuto = false): Promise<{
       lenderDocRef,
       {
         lenderId,
-        businessName: profile.businessName || "Sri Lakshmi Ganapati",
+        businessName: profile.businessName || "LineBook Pro",
         lastBackupAt: exportedAt,
         lastBackupId: backupId,
         villagesCount: villages.length,
@@ -208,6 +208,20 @@ export async function checkAndAutoBackup(force = false): Promise<void> {
   try {
     const isAutoDisabled = localStorage.getItem("slg_auto_cloud_disabled") === "true";
     if (isAutoDisabled && !force) return;
+
+    // Skip empty background backups on fresh installs
+    if (!force) {
+      const dataObj = DB.get<any>(STORAGE_KEYS.DATA, { villages: [], borrowers: {} });
+      const colsObj = DB.get<any>(STORAGE_KEYS.COLS, {});
+      const expArr = DB.get<any[]>(STORAGE_KEYS.EXP, []);
+      if (
+        (!dataObj.villages || dataObj.villages.length === 0) &&
+        Object.keys(colsObj || {}).length === 0 &&
+        (!expArr || expArr.length === 0)
+      ) {
+        return;
+      }
+    }
 
     const last = localStorage.getItem("slg_last_cloud_backup");
     const now = Date.now();

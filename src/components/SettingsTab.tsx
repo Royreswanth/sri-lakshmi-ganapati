@@ -70,6 +70,9 @@ interface SettingsTabProps {
   onToggleLang: () => void;
   onToggleTheme: () => void;
   onLock: () => void;
+  onClearAllData?: (options?: { includeProfileAndPin?: boolean }) => void;
+  collectionsCount?: number;
+  expensesCount?: number;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
 
@@ -85,11 +88,16 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   onToggleLang,
   onToggleTheme,
   onLock,
+  onClearAllData,
+  collectionsCount = 0,
+  expensesCount = 0,
   showToast,
 }) => {
   const [activeSection, setActiveSection] = useState<
     "main" | "pin" | "profile" | "villages" | "backup" | "subscription" | "whatsapp"
   >("main");
+  const [showClearModal, setShowClearModal] = useState(false);
+  const [resetProfileToo, setResetProfileToo] = useState(false);
 
   // WhatsApp Rules State
   const [waRules, setWaRules] = useState<WhatsAppRules>(() => getWhatsAppRules());
@@ -227,8 +235,8 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
     e.preventDefault();
     onUpdateProfile({
       ...profile,
-      businessName: bizName.trim() || "Sri Lakshmi Ganapati",
-      tagline: tagline.trim() || "FINANCE & LINE",
+      businessName: bizName.trim() || "LineBook Pro",
+      tagline: tagline.trim() || "Weekly Line Finance",
       ownerName: ownerName.trim(),
       phone: phone.trim(),
       emblem: selectedEmblem,
@@ -660,8 +668,8 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 if (res) {
                   showToast(
                     lang === "te"
-                      ? "శ్రీ లక్ష్మీ గణపతి యాప్ హోమ్‌స్క్రీన్‌కు జోడించబడింది!"
-                      : "Sri Lakshmi Ganapati added to Home Screen!",
+                      ? `${profile.businessName || "LineBook Pro"} యాప్ హోమ్‌స్క్రీన్‌కు జోడించబడింది!`
+                      : `${profile.businessName || "LineBook Pro"} added to Home Screen!`,
                     "success"
                   );
                 }
@@ -717,12 +725,37 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                   {lang === "te" ? "లాక్ పిన్ మార్చండి" : "Change Security PIN"}
                 </h4>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  ఖచ్చితంగా 4 అంకెల పిన్
+                  {lang === "te" ? "ఖచ్చితంగా 4 అంకెల పిన్" : "Strictly 4 numeric digits"}
                 </p>
               </div>
             </div>
             <span className="text-slate-400">›</span>
           </div>
+
+          {/* Start Fresh / Clear All Data */}
+          {onClearAllData && (
+            <div
+              onClick={() => setShowClearModal(true)}
+              className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-red-200 dark:border-red-900/40 shadow-sm flex items-center justify-between cursor-pointer hover:border-red-400 transition-all"
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 flex items-center justify-center">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-sm text-red-700 dark:text-red-400">
+                    {lang === "te" ? "అన్ని పరీక్ష డేటా తొలగించండి (Start Fresh)" : "Clear All Data / Start Fresh"}
+                  </h4>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {lang === "te"
+                      ? "గ్రామాలు, ఖాతాదారులు & టెస్ట్ వసూళ్లను క్లియర్ చేయండి"
+                      : "Wipe preview/test villages, borrowers & collections"}
+                  </p>
+                </div>
+              </div>
+              <span className="text-slate-400">›</span>
+            </div>
+          )}
 
           {/* Lock App Now Button */}
           <button
@@ -1172,6 +1205,28 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               <span>{lang === "te" ? "ఫైల్ ఎంచుకోండి (*.json)" : "Select Backup File (*.json)"}</span>
             </button>
           </div>
+
+          {/* 5. Start Fresh / Wipe Test Data Card */}
+          {onClearAllData && (
+            <div className="rounded-3xl p-5 bg-white dark:bg-[#131B2E] border border-red-300/60 dark:border-red-900/50 space-y-3 shadow-sm">
+              <h4 className="font-bold text-sm text-red-700 dark:text-red-400 flex items-center gap-2">
+                <Trash2 className="w-4 h-4" />
+                <span>{lang === "te" ? "కొత్తగా ప్రారంభించండి (Clear All Data)" : "Clear Test Data / Start Fresh"}</span>
+              </h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {lang === "te"
+                  ? "అన్ని నమూనా గ్రామాలు, ఖాతాదారులు మరియు వసూళ్ల రికార్డులను శాశ్వతంగా తొలగిస్తుంది."
+                  : "Permanently removes all villages, borrowers, collections, and expenses so you can hand over a fresh ledger."}
+              </p>
+              <button
+                onClick={() => setShowClearModal(true)}
+                className="w-full py-3 px-4 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-xs font-bold text-red-700 dark:text-red-400 flex items-center justify-center gap-2 cursor-pointer hover:bg-red-100"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>{lang === "te" ? "అన్ని డేటా క్లియర్ చేయండి" : "Clear All Ledger Data"}</span>
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -1411,7 +1466,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 className="text-lg sm:text-xl font-serif font-black tracking-wide truncate max-w-xs"
                 style={{ color: brandColor }}
               >
-                {bizName || "Sri Lakshmi Ganapati"}
+                {bizName || "LineBook Pro"}
               </h2>
 
               <p className="text-[10px] tracking-widest font-extrabold uppercase text-slate-400 mt-0.5">
@@ -1522,7 +1577,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 required
                 value={bizName}
                 onChange={(e) => setBizName(e.target.value)}
-                placeholder="e.g. Sri Lakshmi Ganapati Finance"
+                placeholder="e.g. Roy Line Finance"
                 className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm font-bold outline-none focus:border-blue-500"
               />
             </div>
@@ -2235,6 +2290,96 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
             >
               {lang === "te" ? "సరే (Got it)" : "Got It"}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Clear All Data / Start Fresh Confirmation Modal */}
+      {showClearModal && onClearAllData && (
+        <div
+          className="fixed inset-0 bg-slate-900/65 z-50 flex items-center justify-center p-4"
+          onClick={() => setShowClearModal(false)}
+        >
+          <div
+            className="rounded-3xl p-6 max-w-sm w-full bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-12 h-12 rounded-full bg-red-100 dark:bg-red-950/60 text-red-600 flex items-center justify-center mx-auto">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+
+            <div className="text-center space-y-1">
+              <h3 className="font-black text-base text-slate-900 dark:text-slate-100">
+                {lang === "te" ? "అన్ని డేటా క్లియర్ చేయాలా?" : "Clear All Ledger Data?"}
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                {lang === "te"
+                  ? "ఇది ప్రస్తుత గ్రామాలు, ఖాతాదారులు, వసూళ్లు మరియు ఖర్చులన్నింటినీ తొలగించి కొత్తగా ప్రారంభిస్తుంది."
+                  : "This permanently clears all villages, borrowers, collections, and expenses on this device so you can start completely fresh."}
+              </p>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <span className="text-slate-400 block text-[10px] font-bold uppercase">Villages</span>
+                <span className="font-black text-slate-800 dark:text-slate-200">{data.villages.length}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[10px] font-bold uppercase">Borrowers</span>
+                <span className="font-black text-slate-800 dark:text-slate-200">
+                  {Object.values(data.borrowers).flat().length}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[10px] font-bold uppercase">Collections</span>
+                <span className="font-black text-slate-800 dark:text-slate-200">{collectionsCount}</span>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[10px] font-bold uppercase">Expenses</span>
+                <span className="font-black text-slate-800 dark:text-slate-200">{expensesCount}</span>
+              </div>
+            </div>
+
+            <label className="flex items-center gap-2.5 p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 cursor-pointer text-xs text-slate-700 dark:text-slate-300">
+              <input
+                type="checkbox"
+                checked={resetProfileToo}
+                onChange={(e) => setResetProfileToo(e.target.checked)}
+                className="w-4 h-4 accent-red-600 rounded"
+              />
+              <span className="font-semibold">
+                {lang === "te"
+                  ? "లైన్ పేరు & పిన్ (1234) కూడా రీసెట్ చేయండి"
+                  : "Also reset Line Name & PIN back to default (1234)"}
+              </span>
+            </label>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowClearModal(false);
+                  setResetProfileToo(false);
+                }}
+                className="flex-1 py-3 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300 cursor-pointer hover:bg-slate-200"
+              >
+                {lang === "te" ? "రద్దు" : "Cancel"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onClearAllData({ includeProfileAndPin: resetProfileToo });
+                  setWaRules(getWhatsAppRules());
+                  setLastCloudTime("");
+                  setShowClearModal(false);
+                  setResetProfileToo(false);
+                  setActiveSection("main");
+                }}
+                className="flex-1 py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white font-black text-xs cursor-pointer shadow-md"
+              >
+                {lang === "te" ? "అవును, క్లియర్ చేయండి" : "Yes, Clear All Data"}
+              </button>
+            </div>
           </div>
         </div>
       )}

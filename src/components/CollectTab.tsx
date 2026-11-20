@@ -112,6 +112,11 @@ export const CollectTab: React.FC<CollectTabProps> = ({
   } | null>(null);
   const [showReminderCenter, setShowReminderCenter] = useState(false);
 
+  // Quick Add Village Modal (for easy empty-state setup)
+  const [addVillageModal, setAddVillageModal] = useState(false);
+  const [newVillageName, setNewVillageName] = useState("");
+  const [newVillageDay, setNewVillageDay] = useState<"Monday" | "Tuesday">("Monday");
+
   // Add & Edit Borrower Modals
   const [addBorrowerModal, setAddBorrowerModal] = useState(false);
   const [newBorrowerForm, setNewBorrowerForm] = useState({
@@ -706,9 +711,22 @@ export const CollectTab: React.FC<CollectTabProps> = ({
               <Navigation className="w-6 h-6" />
             </div>
           </div>
-          <p className="text-xs text-slate-500 mt-2 font-medium">
-            {formatDateIN(todayStr, lang)} · {getDayName(todayStr, lang)}
-          </p>
+          <div className="flex items-center justify-between mt-2">
+            <p className="text-xs text-slate-500 font-medium">
+              {formatDateIN(todayStr, lang)} · {getDayName(todayStr, lang)}
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setNewVillageDay("Monday");
+                setAddVillageModal(true);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-[#1E3A8A] text-white text-xs font-bold flex items-center gap-1 cursor-pointer shadow-xs hover:bg-blue-900"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{lang === "te" ? "గ్రామం చేర్చండి" : "Add Village"}</span>
+            </button>
+          </div>
         </div>
 
         {["Monday", "Tuesday"].map((day) => {
@@ -732,10 +750,23 @@ export const CollectTab: React.FC<CollectTabProps> = ({
               </div>
 
               {vList.length === 0 ? (
-                <div className="neu-card rounded-2xl p-4 text-xs text-slate-500 text-center">
-                  {lang === "te"
-                    ? `${day} కోసం ఇంకా ఏ గ్రామం లేదు. సెట్టింగ్స్‌లో చేర్చండి.`
-                    : `No villages configured for ${day}. Add in Settings.`}
+                <div className="neu-card rounded-2xl p-4 text-xs text-slate-500 text-center space-y-2.5">
+                  <p>
+                    {lang === "te"
+                      ? `${day} కోసం ఇంకా ఏ గ్రామం లేదు.`
+                      : `No villages configured for ${day} yet.`}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNewVillageDay(day as "Monday" | "Tuesday");
+                      setAddVillageModal(true);
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-[#1E3A8A]/10 text-[#1E3A8A] font-bold text-xs inline-flex items-center gap-1 cursor-pointer hover:bg-[#1E3A8A]/15"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>{lang === "te" ? `${day} గ్రామం జోడించండి` : `Add ${day} Village`}</span>
+                  </button>
                 </div>
               ) : (
                 <div className="space-y-2.5">
@@ -793,6 +824,100 @@ export const CollectTab: React.FC<CollectTabProps> = ({
             </div>
           );
         })}
+
+        {/* Quick Add Village Modal */}
+        {addVillageModal && (
+          <div
+            className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4"
+            onClick={() => setAddVillageModal(false)}
+          >
+            <div
+              className="neu-card rounded-3xl p-5 max-w-sm w-full shadow-2xl space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="font-black text-base text-slate-900">
+                  {lang === "te" ? "కొత్త గ్రామం చేర్చండి" : "Add Line Village"}
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setAddVillageModal(false)}
+                  className="w-8 h-8 rounded-full neu-circle-btn text-slate-500 flex items-center justify-center cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!newVillageName.trim()) return;
+                  const newV: Village = {
+                    id: `v${Date.now()}`,
+                    name: newVillageName.trim(),
+                    day: newVillageDay,
+                  };
+                  onUpdateData({
+                    ...data,
+                    villages: [...data.villages, newV],
+                    borrowers: { ...data.borrowers, [newV.id]: [] },
+                  });
+                  setNewVillageName("");
+                  setAddVillageModal(false);
+                  showToast(
+                    lang === "te" ? "కొత్త గ్రామం చేర్చబడింది ✓" : "Village added successfully ✓",
+                    "success"
+                  );
+                }}
+                className="space-y-3"
+              >
+                <div>
+                  <label className="text-xs font-bold text-slate-600 block mb-1 uppercase">
+                    {lang === "te" ? "గ్రామం పేరు *" : "Village Name *"}
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newVillageName}
+                    onChange={(e) => setNewVillageName(e.target.value)}
+                    placeholder="e.g. Attili"
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 bg-white text-slate-900 text-sm outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-600 block mb-1 uppercase">
+                    {lang === "te" ? "వసూలు రోజు *" : "Line Day *"}
+                  </label>
+                  <select
+                    value={newVillageDay}
+                    onChange={(e) => setNewVillageDay(e.target.value as "Monday" | "Tuesday")}
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-300 bg-white text-slate-900 text-sm outline-none focus:border-blue-500"
+                  >
+                    <option value="Monday">Monday</option>
+                    <option value="Tuesday">Tuesday</option>
+                  </select>
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setAddVillageModal(false)}
+                    className="flex-1 py-2.5 rounded-xl neu-btn text-xs font-bold text-slate-600 cursor-pointer"
+                  >
+                    {lang === "te" ? "రద్దు" : "Cancel"}
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 py-2.5 rounded-xl bg-[#1E3A8A] text-white text-xs font-bold shadow-md hover:bg-blue-900 cursor-pointer"
+                  >
+                    + {lang === "te" ? "జోడించండి" : "Add Village"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
       </div>
     );
   }

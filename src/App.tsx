@@ -22,7 +22,13 @@ import {
   Language,
   ThemeMode,
 } from "./types";
-import { DB, STORAGE_KEYS, DEFAULT_PROFILE } from "./utils/storage";
+import {
+  DB,
+  STORAGE_KEYS,
+  DEFAULT_PROFILE,
+  isUntouchedDemoData,
+  clearAllAppData,
+} from "./utils/storage";
 import { getTodayStr } from "./utils/dateUtils";
 import { checkAndAutoBackup } from "./services/firebaseBackup";
 import { OfflineIndicator } from "./components/OfflineIndicator";
@@ -197,51 +203,34 @@ export default function App() {
     showToast(lang === "te" ? "ఖర్చు తొలగించబడింది" : "Expense deleted", "info");
   };
 
-  // Seed sample villages if empty
+  // Auto-clean strictly untouched preview seed data so new installs start completely clean
   useEffect(() => {
-    if (data.villages.length === 0) {
-      const v1: Village = { id: "v1", name: "Polamuru (పోలమూరు)", day: "Monday" };
-      const v2: Village = { id: "v2", name: "Pippara (పిప్పర)", day: "Tuesday" };
-      const b1: Borrower = {
-        id: "b1",
-        seqNo: "1",
-        name: "వెంకటేశ్వరరావు (Venkateswara Rao)",
-        phone: "9876543210",
-        loanAmt: 10000,
-        durationWeeks: 12,
-        interestPct: 20,
-        weeklyDue: 1000,
-        totalReturn: 12000,
-        weeksPaid: 2,
-        startDate: getTodayStr(),
-        history: [
-          { date: "2026-10-06", status: "paid", amtPaid: 1000, payMethod: "cash" },
-          { date: "2026-10-13", status: "paid", amtPaid: 1000, payMethod: "phonepe" },
-        ],
-      };
-      const b2: Borrower = {
-        id: "b2",
-        seqNo: "2",
-        name: "నాగమణి (Nagamani)",
-        phone: "9848012345",
-        loanAmt: 15000,
-        durationWeeks: 12,
-        interestPct: 20,
-        weeklyDue: 1500,
-        totalReturn: 18000,
-        weeksPaid: 1,
-        startDate: getTodayStr(),
-        history: [
-          { date: "2026-10-06", status: "paid", amtPaid: 1500, payMethod: "cash" },
-        ],
-      };
-      const initial = {
-        villages: [v1, v2],
-        borrowers: { v1: [b1, b2], v2: [] },
-      };
-      handleUpdateData(initial);
+    if (isUntouchedDemoData(data, collections, expenses, newLoansLog, personalLog)) {
+      const emptyLedger = { villages: [], borrowers: {} };
+      setData(emptyLedger);
+      DB.set(STORAGE_KEYS.DATA, emptyLedger);
     }
   }, []);
+
+  // Reset all test / ledger data cleanly (called from Settings -> Start Fresh)
+  const handleClearAllData = (options: { includeProfileAndPin?: boolean } = {}) => {
+    clearAllAppData(options);
+    setData({ villages: [], borrowers: {} });
+    setCollections({});
+    setExpenses([]);
+    setNewLoansLog([]);
+    setPersonalLog([]);
+    if (options.includeProfileAndPin) {
+      setProfile(DEFAULT_PROFILE);
+      setPin("1234");
+    }
+    showToast(
+      lang === "te"
+        ? "అన్ని పరీక్షా డేటా తొలగించబడింది — కొత్తగా ప్రారంభించడానికి సిద్ధం ✓"
+        : "All test data cleared! Ready for a clean start ✓",
+      "success"
+    );
+  };
 
   // Sync Theme with document root element
   useEffect(() => {
@@ -413,6 +402,9 @@ export default function App() {
             onToggleLang={handleToggleLang}
             onToggleTheme={handleToggleTheme}
             onLock={() => setUnlocked(false)}
+            onClearAllData={handleClearAllData}
+            collectionsCount={Object.keys(collections).length}
+            expensesCount={expenses.length}
             showToast={showToast}
           />
         )}

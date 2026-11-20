@@ -432,45 +432,75 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         </span>
       </button>
 
-      {/* 2-Day Advance WhatsApp Pre-Collection Reminders Alert Card */}
-      <div className="rounded-2xl p-4 bg-gradient-to-r from-amber-500/15 via-amber-500/10 to-transparent border border-amber-300/60 dark:border-amber-700/60 shadow-xs flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-11 h-11 rounded-2xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-md">
-            <Bell className="w-5 h-5" />
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-400">
-                {advanceInfo.isTwoDaysAhead
-                  ? lang === "te"
-                    ? "⚡ 2 రోజుల ముందస్తు రిమైండర్"
-                    : "⚡ 2-Day Reminder Active"
-                  : lang === "te"
-                  ? "లైన్ రిమైండర్లు"
-                  : "Line Reminders"}
-              </span>
+      {/* 2-Day Advance WhatsApp Pre-Collection Reminders Alert Card (or Setup Prompt when empty) */}
+      {data.villages.length === 0 ? (
+        <div className="rounded-2xl p-4 bg-gradient-to-r from-blue-600/10 via-blue-500/5 to-transparent border border-blue-300/60 dark:border-blue-800/60 shadow-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-11 h-11 rounded-2xl bg-[#1E3A8A] text-amber-300 flex items-center justify-center shrink-0 shadow-md text-lg">
+              📘
             </div>
-            <h3 className="text-xs sm:text-sm font-black text-slate-900 dark:text-white truncate">
-              {advanceInfo.targetDayName} Line (
-              {advanceInfo.matchingVillages.map((v) => v.name).join(", ") || "Upcoming"}
-              )
-            </h3>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              {lang === "te"
-                ? "ఖాతాదారులకు వారం వాయిదా వాట్సాప్ రిమైండర్లు పంపండి"
-                : "Send advance WhatsApp collection notices to borrowers"}
-            </p>
+            <div className="min-w-0">
+              <span className="text-[10px] font-black uppercase tracking-wider text-blue-700 dark:text-blue-400">
+                {lang === "te" ? "కొత్త లైన్ ప్రారంభం" : "Clean Slate · Ready to Start"}
+              </span>
+              <h3 className="text-xs sm:text-sm font-black text-slate-900 dark:text-white truncate">
+                {lang === "te" ? "మీ మొదటి గ్రామాన్ని చేర్చండి" : "Add Your First Village & Borrowers"}
+              </h3>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {lang === "te"
+                  ? "సోమవారం / మంగళవారం గ్రామాలను జోడించండి"
+                  : "Set up your Monday & Tuesday collection villages"}
+              </p>
+            </div>
           </div>
-        </div>
 
-        <button
-          onClick={() => setShowReminderCenter(true)}
-          className="py-2.5 px-3.5 rounded-xl bg-[#25D366] hover:bg-[#20bd5a] text-white font-extrabold text-xs flex items-center gap-1.5 shrink-0 shadow-md cursor-pointer transition-all active:scale-95"
-        >
-          <MessageCircle className="w-4 h-4 fill-white" />
-          <span>{lang === "te" ? "రిమైండర్లు" : "Send"}</span>
-        </button>
-      </div>
+          <button
+            onClick={() => onNavigateTab("collect")}
+            className="py-2.5 px-3.5 rounded-xl bg-[#1E3A8A] hover:bg-blue-900 text-white font-extrabold text-xs shrink-0 shadow-md cursor-pointer transition-all active:scale-95"
+          >
+            {lang === "te" ? "+ గ్రామం" : "+ Setup"}
+          </button>
+        </div>
+      ) : (
+        <div className="rounded-2xl p-4 bg-gradient-to-r from-amber-500/15 via-amber-500/10 to-transparent border border-amber-300/60 dark:border-amber-700/60 shadow-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-11 h-11 rounded-2xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-md">
+              <Bell className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-400">
+                  {advanceInfo.isTwoDaysAhead
+                    ? lang === "te"
+                      ? "⚡ 2 రోజుల ముందస్తు రిమైండర్"
+                      : "⚡ 2-Day Reminder Active"
+                    : lang === "te"
+                    ? "లైన్ రిమైండర్లు"
+                    : "Line Reminders"}
+                </span>
+              </div>
+              <h3 className="text-xs sm:text-sm font-black text-slate-900 dark:text-white truncate">
+                {advanceInfo.targetDayName} Line (
+                {advanceInfo.matchingVillages.map((v) => v.name).join(", ") || "Upcoming"}
+                )
+              </h3>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {lang === "te"
+                  ? "ఖాతాదారులకు వారం వాయిదా వాట్సాప్ రిమైండర్లు పంపండి"
+                  : "Send advance WhatsApp collection notices to borrowers"}
+              </p>
+            </div>
+          </div>
+
+          <button
+            onClick={() => setShowReminderCenter(true)}
+            className="py-2.5 px-3.5 rounded-xl bg-[#25D366] hover:bg-[#20bd5a] text-white font-extrabold text-xs flex items-center gap-1.5 shrink-0 shadow-md cursor-pointer transition-all active:scale-95"
+          >
+            <MessageCircle className="w-4 h-4 fill-white" />
+            <span>{lang === "te" ? "రిమైండర్లు" : "Send"}</span>
+          </button>
+        </div>
+      )}
 
       {/* 3. FINANCE SUMMARY (2x2 Grid) - Adaptive & Premium */}
       <div className="space-y-3 pt-1">

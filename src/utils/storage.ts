@@ -176,3 +176,102 @@ export function restoreBackupPayload(payload: any): { success: boolean; message:
     return { success: false, message: `Restore error: ${err?.message || "Unknown error"}` };
   }
 }
+
+const DEMO_VILLAGES = new Map<string, string>([
+  ["v1", "Polamuru (పోలమూరు)"],
+  ["v2", "Pippara (పిప్పర)"],
+]);
+
+const DEMO_BORROWERS = new Map<string, string>([
+  ["b1", "వెంకటేశ్వరరావు (Venkateswara Rao)"],
+  ["b2", "నాగమణి (Nagamani)"],
+]);
+
+/**
+ * Returns true ONLY if the stored ledger contains strictly the untouched preview seed data
+ * (Polamuru/Pippara + Venkateswara Rao/Nagamani) with zero user additions or recorded collections.
+ * Guarantees real lender data is NEVER wiped.
+ */
+export function isUntouchedDemoData(
+  data: { villages: Array<{ id: string; name: string }>; borrowers: Record<string, Array<{ id: string; name: string }>> },
+  collections: Record<string, unknown> = {},
+  expenses: unknown[] = [],
+  newLoansLog: unknown[] = [],
+  personalLog: unknown[] = []
+): boolean {
+  if (!data || !Array.isArray(data.villages) || data.villages.length === 0) {
+    return false;
+  }
+
+  if (
+    Object.keys(collections || {}).length > 0 ||
+    (expenses || []).length > 0 ||
+    (newLoansLog || []).length > 0 ||
+    (personalLog || []).length > 0
+  ) {
+    return false;
+  }
+
+  // Every village must strictly match the exact seeded IDs and names
+  for (const v of data.villages) {
+    if (DEMO_VILLAGES.get(v.id) !== v.name) {
+      return false;
+    }
+  }
+
+  // Every borrower must strictly match the exact seeded IDs and names
+  const allBorrowers = Object.values(data.borrowers || {}).flat();
+  for (const b of allBorrowers) {
+    if (DEMO_BORROWERS.get(b.id) !== b.name) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Clears all ledger/testing data from localStorage while keeping an internal safety copy.
+ * Optionally resets Business Profile and PIN as well (Factory Reset).
+ */
+export function clearAllAppData(options: { includeProfileAndPin?: boolean } = {}): void {
+  const { includeProfileAndPin = false } = options;
+
+  try {
+    const preReset = generateBackupPayload();
+    if (Object.keys(preReset.keys).length > 0) {
+      localStorage.setItem("slg_safety_pre_reset", JSON.stringify(preReset));
+    }
+  } catch {}
+
+  const ledgerKeys = [
+    STORAGE_KEYS.DATA,
+    STORAGE_KEYS.COLS,
+    STORAGE_KEYS.EXP,
+    STORAGE_KEYS.NEW_LOANS,
+    STORAGE_KEYS.PERSONAL,
+    STORAGE_KEYS.RECEIPTS_SENT,
+    "slg_last_cloud_backup",
+  ];
+
+  for (const k of ledgerKeys) {
+    DB.remove(k);
+  }
+
+  // Clean village/borrower-specific WhatsApp overrides while keeping master preferences
+  const existingRules = DB.get<any>(STORAGE_KEYS.WHATSAPP_RULES, null);
+  if (existingRules && typeof existingRules === "object") {
+    DB.set(STORAGE_KEYS.WHATSAPP_RULES, {
+      ...existingRules,
+      villageConfigs: {},
+      borrowerConfigs: {},
+    });
+  }
+
+  if (includeProfileAndPin) {
+    DB.remove(STORAGE_KEYS.PROFILE);
+    DB.remove(STORAGE_KEYS.PIN);
+    DB.remove("slg_lender_cloud_id");
+  }
+}
+
