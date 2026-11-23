@@ -1,5 +1,5 @@
 // Sri Lakshmi Ganapati - Village Finance Offline Service Worker
-const CACHE_NAME = 'slg-pwa-v1';
+const CACHE_NAME = 'slg-pwa-v2';
 const PRECACHE_ASSETS = [
   '/',
   '/index.html',
@@ -38,43 +38,40 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(event.request.url);
 
-  // Skip firestore or non-http requests
+  // Skip non-http, external APIs (Firebase/Firestore), and Vite dev server internals
   if (!url.protocol.startsWith('http')) return;
-  if (url.origin.includes('firestore.googleapis.com')) return;
+  if (url.origin !== self.location.origin) return;
+  if (
+    url.pathname.startsWith('/@') ||
+    url.pathname.startsWith('/src/') ||
+    url.pathname.startsWith('/node_modules/')
+  ) {
+    return;
+  }
 
+  // Network-first so deployed updates take effect immediately, falling back to cache when offline
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        // Return cached asset immediately, update in background if online
-        fetch(event.request)
-          .then((networkResponse) => {
-            if (networkResponse && networkResponse.status === 200) {
-              caches.open(CACHE_NAME).then((cache) => cache.put(event.request, networkResponse));
-            }
-          })
-          .catch(() => {});
-        return cachedResponse;
-      }
+    fetch(event.request)
+      .then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const responseClone = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
+        }
+        return networkResponse;
+      })
+      .catch(async () => {
+        const cachedResponse = await caches.match(event.request);
+        if (cachedResponse) return cachedResponse;
 
-      return fetch(event.request)
-        .then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200 && event.request.url.startsWith(self.location.origin)) {
-            const responseClone = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
-          }
-          return networkResponse;
-        })
-        .catch(async () => {
-          if (event.request.mode === 'navigate') {
-            const cachedIndex = await caches.match('/index.html') || await caches.match('/');
-            if (cachedIndex) return cachedIndex;
-          }
-          return new Response('Offline Village Mode', {
-            status: 503,
-            statusText: 'Service Unavailable',
-            headers: { 'Content-Type': 'text/plain' }
-          });
+        if (event.request.mode === 'navigate') {
+          const cachedIndex = (await caches.match('/index.html')) || (await caches.match('/'));
+          if (cachedIndex) return cachedIndex;
+        }
+        return new Response('Offline Village Mode', {
+          status: 503,
+          statusText: 'Service Unavailable',
+          headers: { 'Content-Type': 'text/plain' }
         });
-    })
+      })
   );
 });

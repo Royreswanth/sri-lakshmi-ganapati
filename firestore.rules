@@ -1,35 +1,332 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Default-deny catch-all
+    // 1. Global Safety Net (Default Deny)
     match /{document=**} {
       allow read, write: if false;
+    }
+
+    // 2. Primitive Identity & Hygiene Helpers
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
     }
 
     function isSignedIn() {
       return request.auth != null;
     }
 
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
     }
 
-    // Lender Profile
-    match /lenders/{lenderId} {
-      allow get: if isValidId(lenderId);
-      allow list: if isValidId(lenderId);
-      allow create, update: if isValidId(lenderId);
-      allow delete: if isValidId(lenderId) && (request.auth != null ? request.auth.uid == lenderId : true);
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
 
-      // Cloud Backups subcollection
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'reswanth6789@gmail.com';
+    }
+
+    // 3. Entity Validation Blueprints (Synchronized with firebase-blueprint.json)
+    function isValidUserVaultProfile(data, userId) {
+      return data.keys().hasAll([
+          'ownerId',
+          'email',
+          'displayName',
+          'businessName',
+          'lastBackupId',
+          'lastBackupAt',
+          'villagesCount',
+          'borrowersCount',
+          'totalLent',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'email',
+          'displayName',
+          'businessName',
+          'lastBackupId',
+          'lastBackupAt',
+          'villagesCount',
+          'borrowersCount',
+          'totalLent',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.ownerId is string && data.ownerId == userId && data.ownerId == request.auth.uid && isValidId(data.ownerId)
+        && data.email is string && data.email.size() <= 200
+        && data.displayName is string && data.displayName.size() <= 120
+        && data.businessName is string && data.businessName.size() >= 1 && data.businessName.size() <= 120
+        && data.lastBackupId is string && isValidId(data.lastBackupId)
+        && data.lastBackupAt is string && data.lastBackupAt.size() >= 10 && data.lastBackupAt.size() <= 40
+        && data.villagesCount is number && data.villagesCount >= 0 && data.villagesCount <= 500
+        && data.borrowersCount is number && data.borrowersCount >= 0 && data.borrowersCount <= 5000
+        && data.totalLent is number && data.totalLent >= 0 && data.totalLent <= 1000000000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLedgerMap(ledger) {
+      return ledger is map
+        && ledger.keys().hasAll(['slg_data'])
+        && ledger.keys().hasOnly([
+          'slg_data',
+          'slg_cols',
+          'slg_exp',
+          'slg_pin',
+          'slg_newloans',
+          'slg_personal',
+          'slg_profile',
+          'slg_lang',
+          'slg_theme',
+          'slg_whatsapp_rules',
+          'slg_receipts_sent',
+          'slg_cash_opening'
+        ])
+        && ledger.slg_data is map
+        && ledger.slg_data.keys().hasAll(['villages', 'borrowers'])
+        && ledger.slg_data.keys().hasOnly(['villages', 'borrowers'])
+        && ledger.slg_data.villages is list
+        && ledger.slg_data.villages.size() <= 500
+        && (ledger.slg_data.villages.size() == 0 || ledger.slg_data.villages[0] is map)
+        && ledger.slg_data.borrowers is map
+        && (!('slg_cols' in ledger) || ledger.slg_cols is map)
+        && (!('slg_exp' in ledger) || (
+          ledger.slg_exp is list && ledger.slg_exp.size() <= 5000
+          && (ledger.slg_exp.size() == 0 || ledger.slg_exp[0] is map)
+        ))
+        && (!('slg_pin' in ledger) || (
+          ledger.slg_pin is string && ledger.slg_pin.size() == 4 && ledger.slg_pin.matches('^[0-9]{4}$')
+        ))
+        && (!('slg_newloans' in ledger) || (
+          ledger.slg_newloans is list && ledger.slg_newloans.size() <= 5000
+          && (ledger.slg_newloans.size() == 0 || ledger.slg_newloans[0] is map)
+        ))
+        && (!('slg_personal' in ledger) || (
+          ledger.slg_personal is list && ledger.slg_personal.size() <= 5000
+          && (ledger.slg_personal.size() == 0 || ledger.slg_personal[0] is map)
+        ))
+        && (!('slg_profile' in ledger) || ledger.slg_profile is map)
+        && (!('slg_lang' in ledger) || (ledger.slg_lang is string && ledger.slg_lang in ['en', 'te']))
+        && (!('slg_theme' in ledger) || (ledger.slg_theme is string && ledger.slg_theme in ['light', 'dark']))
+        && (!('slg_whatsapp_rules' in ledger) || ledger.slg_whatsapp_rules is map)
+        && (!('slg_receipts_sent' in ledger) || ledger.slg_receipts_sent is map)
+        && (!('slg_cash_opening' in ledger) || ledger.slg_cash_opening is map);
+    }
+
+    function isValidUserVaultBackup(data, userId, backupId) {
+      return data.keys().hasAll([
+          'backupId',
+          'ownerId',
+          'businessName',
+          'exportedAt',
+          'schemaVersion',
+          'villagesCount',
+          'borrowersCount',
+          'totalLent',
+          'auto',
+          'ledger',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'backupId',
+          'ownerId',
+          'businessName',
+          'exportedAt',
+          'schemaVersion',
+          'villagesCount',
+          'borrowersCount',
+          'totalLent',
+          'auto',
+          'ledger',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.backupId is string && data.backupId == backupId && isValidId(data.backupId)
+        && data.ownerId is string && data.ownerId == userId && data.ownerId == request.auth.uid && isValidId(data.ownerId)
+        && data.businessName is string && data.businessName.size() >= 1 && data.businessName.size() <= 120
+        && data.exportedAt is string && data.exportedAt.size() >= 10 && data.exportedAt.size() <= 40
+        && data.schemaVersion is number && data.schemaVersion >= 1 && data.schemaVersion <= 10
+        && data.villagesCount is number && data.villagesCount >= 0 && data.villagesCount <= 500
+        && data.borrowersCount is number && data.borrowersCount >= 0 && data.borrowersCount <= 5000
+        && data.totalLent is number && data.totalLent >= 0 && data.totalLent <= 1000000000
+        && data.auto is bool
+        && isValidLedgerMap(data.ledger)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isSyncMetaUpdateAction() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+        'email',
+        'displayName',
+        'businessName',
+        'lastBackupId',
+        'lastBackupAt',
+        'villagesCount',
+        'borrowersCount',
+        'totalLent',
+        'updatedAt'
+      ]);
+    }
+
+    function isProfileUpdateAction() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+        'displayName',
+        'businessName',
+        'updatedAt'
+      ]);
+    }
+
+    function isValidLicenseDoc(data, licenseId) {
+      return data.keys().hasAll([
+          'licenseId',
+          'deviceId',
+          'lenderEmail',
+          'businessName',
+          'plan',
+          'status',
+          'expiresAt',
+          'activationKey',
+          'grantedBy',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'licenseId',
+          'deviceId',
+          'lenderEmail',
+          'businessName',
+          'plan',
+          'status',
+          'expiresAt',
+          'activationKey',
+          'grantedBy',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.licenseId is string && data.licenseId == licenseId && isValidId(data.licenseId)
+        && data.deviceId is string && data.deviceId.size() <= 64 && isValidId(data.deviceId)
+        && data.lenderEmail is string && data.lenderEmail.size() <= 200
+        && data.businessName is string && data.businessName.size() >= 1 && data.businessName.size() <= 120
+        && data.plan is string && data.plan in ['half_yearly', 'yearly', 'custom_app', 'lifetime_free']
+        && data.status is string && data.status in ['active', 'revoked']
+        && data.expiresAt is string && data.expiresAt.size() == 10 && data.expiresAt.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.activationKey is string && data.activationKey.size() >= 8 && data.activationKey.size() <= 64
+        && data.grantedBy is string && data.grantedBy == request.auth.uid && isValidId(data.grantedBy)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isUpdateLicenseAction() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+        'lenderEmail',
+        'businessName',
+        'plan',
+        'status',
+        'expiresAt',
+        'activationKey',
+        'updatedAt'
+      ]);
+    }
+
+    function isRevokeLicenseAction() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+        'status',
+        'updatedAt'
+      ]) && incoming().status == 'revoked';
+    }
+
+    // 4. Master Collection: /users/{userId} (PII Isolated Strictly to Verified Owner)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserVaultProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserVaultProfile(incoming(), userId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (isSyncMetaUpdateAction() || isProfileUpdateAction());
+      allow delete: if isValidId(userId) && isOwner(userId);
+
+      // 5. Subcollection: /users/{userId}/backups/{backupId}
       match /backups/{backupId} {
-        allow get: if isValidId(backupId) && isValidId(lenderId);
-        allow list: if isValidId(lenderId);
-        allow create: if isValidId(backupId) && isValidId(lenderId)
-          && request.resource.data.dataJson is string
-          && request.resource.data.dataJson.size() < 5000000;
-        allow update, delete: if isValidId(backupId) && isValidId(lenderId);
+        allow get: if isValidId(userId)
+          && isValidId(backupId)
+          && isOwner(userId)
+          && existing().ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/users/$(userId)).data.ownerId == request.auth.uid;
+
+        allow list: if isOwner(userId)
+          && resource.data.ownerId == request.auth.uid;
+
+        allow create: if isValidId(userId)
+          && isValidId(backupId)
+          && isOwner(userId)
+          && isValidUserVaultBackup(incoming(), userId, backupId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && existsAfter(/databases/$(database)/documents/users/$(userId))
+          && getAfter(/databases/$(database)/documents/users/$(userId)).data.ownerId == request.auth.uid;
+
+        allow update: if false;
+
+        allow delete: if isValidId(userId)
+          && isValidId(backupId)
+          && isOwner(userId)
+          && existing().ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/users/$(userId)).data.ownerId == request.auth.uid;
       }
+    }
+
+    // 6. Subscription Licensing Collection: /licenses/{licenseId}
+    match /licenses/{licenseId} {
+      allow get: if isValidId(licenseId) && (
+        isAdmin() || (
+          isVerifiedUser()
+          && existing().lenderEmail != ''
+          && existing().lenderEmail == request.auth.token.email
+        )
+      );
+
+      allow list: if isAdmin() || (
+        isVerifiedUser()
+        && resource.data.lenderEmail != ''
+        && resource.data.lenderEmail == request.auth.token.email
+      );
+
+      allow create: if isValidId(licenseId)
+        && isAdmin()
+        && isValidLicenseDoc(incoming(), licenseId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(licenseId)
+        && isAdmin()
+        && isValidLicenseDoc(incoming(), licenseId)
+        && incoming().grantedBy == existing().grantedBy
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (isUpdateLicenseAction() || isRevokeLicenseAction());
+
+      allow delete: if isValidId(licenseId) && isAdmin();
     }
   }
 }

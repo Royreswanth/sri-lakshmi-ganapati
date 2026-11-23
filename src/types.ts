@@ -1,4 +1,13 @@
-export type DayOfWeek = "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday" | "Sunday";
+export type DayOfWeek =
+  | "Monday"
+  | "Tuesday"
+  | "Wednesday"
+  | "Thursday"
+  | "Friday"
+  | "Saturday"
+  | "Sunday";
+
+export type RepaymentFrequency = "weekly" | "daily" | "monthly";
 
 export type PaymentStatus = "paid" | "skip" | "short" | "extra";
 export type PaymentMethod = "cash" | "phonepe" | "online";
@@ -10,6 +19,25 @@ export interface HistoryEntry {
   note?: string;
   payMethod?: PaymentMethod;
   extraAmt?: number;
+  isSettlement?: boolean;
+  discountAmt?: number;
+}
+
+export interface PastLoanCycle {
+  cycle: number;
+  loanAmt: number;
+  interestPct: number;
+  durationWeeks: number;
+  repaymentFreq: RepaymentFrequency;
+  weeklyDue: number;
+  totalReturn: number;
+  totalPaid: number;
+  startDate: string;
+  closedDate: string;
+  closureType: "completed" | "settled_early" | "renewed";
+  settlementDiscount?: number;
+  note?: string;
+  history: HistoryEntry[];
 }
 
 export interface Borrower {
@@ -17,18 +45,31 @@ export interface Borrower {
   seqNo: string; // Roll number e.g. "1", "12", "A-5"
   name: string;
   phone?: string;
+  careOf?: string; // Father / Husband / Shop name
+  guarantorName?: string;
+  guarantorPhone?: string;
   loanAmt: number;
-  durationWeeks: number; // default 12, +1 on skip, +1 on short
+  durationWeeks: number; // default 12 for weekly, 60/100 for daily, 3/6/12 for monthly (+1 on skip/short)
+  repaymentFreq?: RepaymentFrequency; // defaults to "weekly"
   interestPct: number; // e.g. 20
-  weeklyDue: number; // ceil(loan * (1 + pct/100) / weeks)
-  totalReturn: number; // weeklyDue * originalWeeks
+  weeklyDue: number; // installment amount per period
+  totalReturn: number; // weeklyDue * original periods
   weeksPaid: number;
   startDate: string;
   isOngoing?: boolean;
+  settledAt?: string; // YYYY-MM-DD if closed early
+  settlementDiscount?: number;
+  loanCycle?: number; // starts at 1
+  loanHistory?: PastLoanCycle[];
   history: HistoryEntry[];
   hasWhatsApp?: boolean; // true = smartphone with WhatsApp (default), false = keypad phone
   disableReceipt?: boolean; // true = lender disabled auto receipt for this borrower
   disableReminder?: boolean; // true = lender disabled 2-day reminder
+  photo?: string; // compressed base64 JPEG portrait thumbnail
+  gender?: "male" | "female" | "other";
+  age?: string;
+  occupation?: string;
+  address?: string;
 }
 
 export interface Village {
@@ -129,6 +170,21 @@ export type EmblemType =
   | "crown"
   | "tree";
 
+export type SubscriptionPlanType =
+  | "unsubscribed"
+  | "trial"
+  | "half_yearly"
+  | "yearly"
+  | "custom_app"
+  | "lifetime_free";
+
+export type SubscriptionStatusType =
+  | "unsubscribed"
+  | "active"
+  | "expired"
+  | "revoked"
+  | "lifetime_free";
+
 export interface BusinessProfile {
   businessName: string;
   tagline: string;
@@ -139,10 +195,64 @@ export interface BusinessProfile {
   modelType: BusinessModelType;
   partners: PartnerConfig[];
   workers: WorkerConfig[];
-  subscriptionPlan: "trial" | "half_yearly" | "yearly" | "custom_app";
+  subscriptionPlan: SubscriptionPlanType;
+  subscriptionStatus?: SubscriptionStatusType;
+  subscriptionExpiresAt?: string; // YYYY-MM-DD
+  activatedAt?: string; // ISO timestamp
+  activatedBy?: "activation_key" | "cloud_license" | "legacy_family" | "owner_admin";
+  deviceId?: string;
   trialEndsAt: string;
   licenseKey?: string;
+  lineDaysMode?: "specific" | "daily";
+  lineDays?: DayOfWeek[];
+  lineDaysConfigured?: boolean;
+  enableDailyCashbook?: boolean;
+  lineCycleWeeks?: number;
+}
+
+export interface CloudLicenseRecord {
+  licenseId: string;
+  deviceId: string;
+  lenderEmail: string;
+  businessName: string;
+  plan: "half_yearly" | "yearly" | "custom_app" | "lifetime_free";
+  status: "active" | "revoked";
+  expiresAt: string; // YYYY-MM-DD
+  activationKey: string;
+  grantedBy: string;
 }
 
 export type Language = "en" | "te";
 export type ThemeMode = "light" | "dark";
+
+export type CashOpeningMap = Record<string, number>;
+
+export interface CashbookVillageBreakdown {
+  villageId: string;
+  villageName: string;
+  totalExpected: number;
+  totalCollected: number;
+  cashCollected: number;
+  phonePeCollected: number;
+  onlineCollected: number;
+  entryCount: number;
+}
+
+export interface DailyCashbookSummary {
+  date: string;
+  openingCash: number;
+  isOpeningExplicit: boolean;
+  carriedFromDate?: string;
+  cashCollected: number;
+  phonePeCollected: number;
+  onlineCollected: number;
+  digitalCollected: number;
+  totalCollected: number;
+  newLoansTotal: number;
+  expensesTotal: number;
+  personalTotal: number;
+  totalOutflows: number;
+  closingCashInBag: number;
+  villageBreakdowns: CashbookVillageBreakdown[];
+}
+

@@ -1,0 +1,6 @@
+{
+  "summary":  "Phase-by-phase upgrade blueprint for LineBook Pro before commercial launch to micro-lenders. Covers confirmed priorities: (1) Tailwind v4 theme contrast fix and mobile/desktop UI polish, (2) 7-day weekly plus daily and monthly loan schedules alongside guarantor CRM details, 1-tap calling, loan renewal/top-up, and early closure, (3) Daily Cashbook with closing cash in bag, PDF/WhatsApp Borrower Passbook, and CSV exports, (4) Optional Google Sign-In paired with hardened UID-scoped Firebase Firestore cloud sync and cross-phone recovery, and (5) Final SaaS polish with step-by-step verification gates after every phase.",
+  "updatedAt":  "2026-11-20T13:48:26.669717694Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

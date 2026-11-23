@@ -9,6 +9,7 @@ export type TabType =
   | "reports"
   | "calendar"
   | "calc"
+  | "cashbook"
   | "expenses"
   | "settings";
 
@@ -63,7 +64,7 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
   ];
 
   return (
-    <div className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[92%] max-w-md z-40 select-none">
+    <div className="fixed bottom-3 left-1/2 -translate-x-1/2 w-[92%] max-w-md z-40 select-none print:hidden">
       <nav className="rounded-full px-2 py-2 flex items-center justify-between backdrop-blur-md bg-white/95 dark:bg-[#131B2E]/95 border border-slate-200/80 dark:border-slate-800 shadow-xl shadow-slate-900/10 dark:shadow-black/60 transition-colors">
         {tabs.map((tab) => {
           const isActive = selected === tab.id;
@@ -72,6 +73,9 @@ export const BottomTabBar: React.FC<BottomTabBarProps> = ({
           return (
             <button
               key={tab.id}
+              type="button"
+              aria-label={label}
+              title={label}
               onClick={() => onSelectTab(tab.id)}
               className={`flex items-center gap-1.5 py-2 px-3 rounded-full transition-all duration-200 cursor-pointer ${
                 isActive

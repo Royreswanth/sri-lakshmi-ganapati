@@ -516,6 +516,13 @@ export const PinScreen: React.FC<PinScreenProps> = ({
           <div key={k.label} className="flex justify-center">
             <button
               type="button"
+              aria-label={
+                k.val === "bio"
+                  ? "Biometric Unlock"
+                  : k.val === "del"
+                  ? "Backspace"
+                  : k.label
+              }
               disabled={remainingLockout > 0}
               onClick={() => press(k.val)}
               className={`group w-16 h-16 sm:w-18 sm:h-18 rounded-full bg-slate-900/90 hover:bg-slate-800 border border-slate-800/90 active:border-amber-400/60 active:scale-95 flex items-center justify-center text-xl sm:text-2xl font-bold text-slate-100 shadow-lg transition-all ${

@@ -1,94 +1,264 @@
 {
   "entities": {
-    "LenderBackup": {
-      "title": "Lender Backup",
-      "description": "Snapshot of LineBook Pro offline financial ledger for automated cloud backup and recovery.",
+    "UserVaultProfile": {
+      "title": "User Vault Profile",
+      "description": "Authenticated Google lender cloud vault metadata and PII-isolated owner summary.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the authenticated Google user",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified Google account email",
+          "maxLength": 200
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Verified Google display name",
+          "maxLength": 120
+        },
+        "businessName": {
+          "type": "string",
+          "description": "Name of the lending business",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "lastBackupId": {
+          "type": "string",
+          "description": "Most recent snapshot document ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "lastBackupAt": {
+          "type": "string",
+          "description": "ISO timestamp of most recent backup",
+          "minLength": 10,
+          "maxLength": 40
+        },
+        "villagesCount": {
+          "type": "number",
+          "description": "Count of active line villages (0 to 500)"
+        },
+        "borrowersCount": {
+          "type": "number",
+          "description": "Count of active and closed borrowers (0 to 5000)"
+        },
+        "totalLent": {
+          "type": "number",
+          "description": "Total principal lent across ledger"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of vault creation"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest sync"
+        }
+      },
+      "required": [
+        "ownerId",
+        "email",
+        "displayName",
+        "businessName",
+        "lastBackupId",
+        "lastBackupAt",
+        "villagesCount",
+        "borrowersCount",
+        "totalLent",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "UserVaultBackup": {
+      "title": "User Vault Backup",
+      "description": "Immutable structured cloud snapshot of the lender's offline LineBook Pro ledger using native Firestore maps and lists.",
       "type": "object",
       "properties": {
         "backupId": {
           "type": "string",
-          "description": "Unique ID of the backup snapshot"
+          "description": "Unique snapshot ID matching document ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
-        "lenderId": {
+        "ownerId": {
           "type": "string",
-          "description": "Identifier of the lender / business"
+          "description": "Firebase Auth UID of the authenticated owner",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
         "businessName": {
           "type": "string",
-          "description": "Name of the lending business"
+          "description": "Business name at snapshot time",
+          "minLength": 1,
+          "maxLength": 120
         },
         "exportedAt": {
           "type": "string",
-          "description": "ISO timestamp of when the backup was created"
+          "description": "ISO timestamp of snapshot export",
+          "minLength": 10,
+          "maxLength": 40
         },
-        "version": {
-          "type": "string",
-          "description": "Application data schema version"
+        "schemaVersion": {
+          "type": "number",
+          "description": "Structured ledger backup schema version (1 to 10)"
         },
         "villagesCount": {
           "type": "number",
-          "description": "Number of villages included in the backup"
+          "description": "Number of villages in snapshot"
         },
         "borrowersCount": {
           "type": "number",
-          "description": "Number of borrowers included in the backup"
+          "description": "Number of borrowers in snapshot"
         },
         "totalLent": {
           "type": "number",
-          "description": "Total loan money circulating at the time of backup"
+          "description": "Total principal lent across ledger"
         },
-        "dataJson": {
-          "type": "string",
-          "description": "Stringified complete ledger JSON payload"
+        "auto": {
+          "type": "boolean",
+          "description": "Whether snapshot was created automatically or manually"
         },
-        "storageUrl": {
-          "type": "string",
-          "description": "Firebase Storage reference or URL"
-        }
-      },
-      "required": ["backupId", "lenderId", "exportedAt", "dataJson"]
-    },
-    "LenderProfile": {
-      "title": "Lender Profile",
-      "description": "User account for the micro-lender, including license validity and subscription tier.",
-      "type": "object",
-      "properties": {
-        "lenderId": {
-          "type": "string",
-          "description": "Unique lender ID"
-        },
-        "businessName": {
-          "type": "string",
-          "description": "Business brand name"
-        },
-        "phone": {
-          "type": "string",
-          "description": "Lender contact phone number"
-        },
-        "plan": {
-          "type": "string",
-          "description": "Subscription plan: 6months, 12months, custom"
-        },
-        "expiresAt": {
-          "type": "string",
-          "description": "License expiration date (ISO)"
+        "ledger": {
+          "type": "object",
+          "description": "Native Firestore Map of slg_* ledger keys (slg_data, slg_cols, slg_exp, etc.)"
         },
         "createdAt": {
           "type": "string",
-          "description": "Account registration date"
+          "format": "date-time",
+          "description": "Server timestamp of snapshot creation"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of snapshot write"
         }
       },
-      "required": ["lenderId", "businessName", "plan", "expiresAt"]
+      "required": [
+        "backupId",
+        "ownerId",
+        "businessName",
+        "exportedAt",
+        "schemaVersion",
+        "villagesCount",
+        "borrowersCount",
+        "totalLent",
+        "auto",
+        "ledger",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "LicenseGrant": {
+      "title": "SaaS License Grant",
+      "description": "Owner-managed subscription license granting access to a lender device or verified Google email.",
+      "type": "object",
+      "properties": {
+        "licenseId": {
+          "type": "string",
+          "description": "Unique license ID matching document ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "deviceId": {
+          "type": "string",
+          "description": "Bound lender Device ID",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "lenderEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Optional verified Google email linked to this license",
+          "maxLength": 200
+        },
+        "businessName": {
+          "type": "string",
+          "description": "Lender business name",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "plan": {
+          "type": "string",
+          "enum": ["half_yearly", "yearly", "custom_app", "lifetime_free"],
+          "description": "Granted SaaS plan tier"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "revoked"],
+          "description": "License activation status"
+        },
+        "expiresAt": {
+          "type": "string",
+          "description": "License expiration date (YYYY-MM-DD)",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "activationKey": {
+          "type": "string",
+          "description": "Signed offline activation key bound to deviceId",
+          "minLength": 8,
+          "maxLength": 64
+        },
+        "grantedBy": {
+          "type": "string",
+          "description": "Admin UID who granted the license",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of license creation"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest update"
+        }
+      },
+      "required": [
+        "licenseId",
+        "deviceId",
+        "lenderEmail",
+        "businessName",
+        "plan",
+        "status",
+        "expiresAt",
+        "activationKey",
+        "grantedBy",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
-    "/lenders/{lenderId}/backups/{backupId}": {
-      "schema": { "$ref": "#/entities/LenderBackup" },
-      "description": "Cloud backup snapshots created automatically or manually by the lender."
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserVaultProfile" },
+      "description": "Owner-only PII and vault metadata profile for the authenticated Google user."
     },
-    "/lenders/{lenderId}": {
-      "schema": { "$ref": "#/entities/LenderProfile" },
-      "description": "Profile and license subscription data for each lender."
+    "/users/{userId}/backups/{backupId}": {
+      "schema": { "$ref": "#/entities/UserVaultBackup" },
+      "description": "Owner-only immutable cloud ledger snapshots stored under the lender's Google UID."
+    },
+    "/licenses/{licenseId}": {
+      "schema": { "$ref": "#/entities/LicenseGrant" },
+      "description": "Admin-managed subscription licenses read-scoped strictly to the admin or verified matching lender email."
     }
   }
 }

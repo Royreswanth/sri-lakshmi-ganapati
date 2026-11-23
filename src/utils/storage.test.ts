@@ -98,6 +98,7 @@ test("clearAllAppData clears all financial keys and preserves profile/PIN unless
     [STORAGE_KEYS.NEW_LOANS]: JSON.stringify([{ id: "nl1" }]),
     [STORAGE_KEYS.PERSONAL]: JSON.stringify([{ id: "p1" }]),
     [STORAGE_KEYS.RECEIPTS_SENT]: JSON.stringify({ r1: true }),
+    [STORAGE_KEYS.CASH_OPENING]: JSON.stringify({ "2026-11-20": 5000 }),
     [STORAGE_KEYS.PROFILE]: JSON.stringify({ businessName: "Dad Line" }),
     [STORAGE_KEYS.PIN]: JSON.stringify("5678"),
     [STORAGE_KEYS.WHATSAPP_RULES]: JSON.stringify({
@@ -117,6 +118,7 @@ test("clearAllAppData clears all financial keys and preserves profile/PIN unless
   assert.equal(store.has(STORAGE_KEYS.NEW_LOANS), false);
   assert.equal(store.has(STORAGE_KEYS.PERSONAL), false);
   assert.equal(store.has(STORAGE_KEYS.RECEIPTS_SENT), false);
+  assert.equal(store.has(STORAGE_KEYS.CASH_OPENING), false);
   assert.equal(store.has(STORAGE_KEYS.PROFILE), true);
   assert.equal(store.has(STORAGE_KEYS.PIN), true);
 

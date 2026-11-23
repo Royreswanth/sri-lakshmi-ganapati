@@ -1,5 +1,14 @@
-import { Borrower, Language, PaymentStatus, Village, PaymentMethod, WhatsAppRules } from "../types";
-import { formatCurrency, formatDateIN, getTodayStr, getDayName, parseLocalDate } from "./dateUtils";
+import {
+  Borrower,
+  DayOfWeek,
+  Language,
+  PaymentStatus,
+  Village,
+  PaymentMethod,
+  WhatsAppRules,
+} from "../types";
+import { formatCurrency, formatDateIN, getTodayStr, getDayName } from "./dateUtils";
+import { getFrequencyShortPrefix, isBorrowerClosed } from "./financeUtils";
 import { DB, STORAGE_KEYS } from "./storage";
 
 export const REMINDERS_STORAGE_KEY = "slg_reminders";
@@ -45,6 +54,7 @@ export function buildWhatsAppReceiptText({
 }: ReceiptParams): string {
   const currentWeek = borrower.weeksPaid;
   const totalWeeks = borrower.durationWeeks || 12;
+  const freqPrefix = getFrequencyShortPrefix(borrower.repaymentFreq);
   const formattedDate = formatDateIN(dateStr, lang);
   const day = getDayName(dateStr, lang);
 
@@ -73,7 +83,7 @@ export function buildWhatsAppReceiptText({
       `👤 *ఖాతాదారు:* ${borrower.name}${borrower.seqNo ? ` (#${borrower.seqNo})` : ""}`,
       `📍 *గ్రామం:* ${villageName}`,
       `📅 *తేదీ:* ${day}, ${formattedDate}`,
-      `📊 *వాయిదా వారం:* Wk ${currentWeek} / ${totalWeeks}`,
+      `📊 *వాయిదా:* ${freqPrefix} ${currentWeek} / ${totalWeeks}`,
       `💵 *వాయిదా మొత్తం:* ${formatCurrency(borrower.weeklyDue)}`,
       `✅ *చెల్లించిన మొత్తం:* ${formatCurrency(amtPaid)} (${statusText})`,
       `💳 *చెల్లింపు విధానం:* ${payModeText}`,
@@ -118,8 +128,8 @@ export function buildWhatsAppReceiptText({
     `👤 *Borrower:* ${borrower.name}${borrower.seqNo ? ` (#${borrower.seqNo})` : ""}`,
     `📍 *Village:* ${villageName}`,
     `📅 *Date:* ${day}, ${formattedDate}`,
-    `📊 *Installment:* Wk ${currentWeek} / ${totalWeeks}`,
-    `💵 *Weekly Due:* ${formatCurrency(borrower.weeklyDue)}`,
+    `📊 *Installment:* ${freqPrefix} ${currentWeek} / ${totalWeeks}`,
+    `💵 *Installment Due:* ${formatCurrency(borrower.weeklyDue)}`,
     `✅ *Amount Paid:* ${formatCurrency(amtPaid)} (${statusTextEn})`,
     `💳 *Payment Mode:* ${payModeTextEn}`,
   ];
@@ -161,16 +171,17 @@ export function buildAdvanceReminderText({
   const visitDayName = getDayName(visitDate, lang);
   const nextWeek = borrower.weeksPaid + 1;
   const totalWeeks = borrower.durationWeeks || 12;
+  const freqPrefix = getFrequencyShortPrefix(borrower.repaymentFreq);
 
   if (lang === "te") {
     return [
       `🙏 నమస్కారం *${borrower.name}* గారు,`,
       ``,
       `*${businessName}* వారి తరపున ముందస్తు సమాచారం.`,
-      `మా ప్రతినిధి *${visitDayName} (${formattedDate})* నాడు మీ గ్రామం (*${villageName}*) కు వారం వాయిదా సేకరణ కోసం వస్తున్నారు.`,
+      `మా ప్రతినిధి *${visitDayName} (${formattedDate})* నాడు మీ గ్రామం (*${villageName}*) కు వాయిదా సేకరణ కోసం వస్తున్నారు.`,
       ``,
-      `💵 *ఈ వారం వాయిదా:* ${formatCurrency(borrower.weeklyDue)}`,
-      `📊 *వాయిదా వారం:* Wk ${nextWeek} / ${totalWeeks}`,
+      `💵 *వాయిదా మొత్తం:* ${formatCurrency(borrower.weeklyDue)}`,
+      `📊 *వాయిదా:* ${freqPrefix} ${nextWeek} / ${totalWeeks}`,
       `⏳ *మొత్తం మిగిలిన బాకీ:* ${formatCurrency(remainingBal)}`,
       ``,
       `దయచేసి మీ వాయిదా మొత్తాన్ని సిద్ధంగా ఉంచుకోగలరని కోరుతున్నాము. నగదు లేదా PhonePe ద్వారా చెల్లించవచ్చు.`,
@@ -182,10 +193,10 @@ export function buildAdvanceReminderText({
     `🙏 Hello *${borrower.name}*,`,
     ``,
     `Advance notice from *${businessName}*.`,
-    `Our agent will visit *${villageName}* on *${visitDayName} (${formattedDate})* for weekly loan collection.`,
+    `Our agent will visit *${villageName}* on *${visitDayName} (${formattedDate})* for loan collection.`,
     ``,
-    `💵 *Weekly Due:* ${formatCurrency(borrower.weeklyDue)}`,
-    `📊 *Installment Week:* Wk ${nextWeek} / ${totalWeeks}`,
+    `💵 *Installment Due:* ${formatCurrency(borrower.weeklyDue)}`,
+    `📊 *Installment:* ${freqPrefix} ${nextWeek} / ${totalWeeks}`,
     `⏳ *Remaining Balance:* ${formatCurrency(remainingBal)}`,
     ``,
     `Please keep the installment amount ready. (Cash or PhonePe accepted).`,
@@ -254,6 +265,15 @@ export function normalizePhoneNumber(phone?: string): string {
 }
 
 /**
+ * Builds direct tel: URI for 1-tap dialer launch
+ */
+export function getTelHref(phone?: string): string | null {
+  const digits = normalizePhoneNumber(phone);
+  if (digits.length < 7) return null;
+  return digits.length === 10 ? `tel:+91${digits}` : `tel:${digits}`;
+}
+
+/**
  * Builds the direct WhatsApp click-to-chat URL
  */
 export function getWhatsAppUrl(phone: string | undefined, text: string): string {
@@ -291,14 +311,13 @@ export function openWhatsApp(phone: string | undefined, text: string): void {
 }
 
 /**
- * Calculate 2-Day Advance Line Information
- * E.g., Saturday (day 6) -> Monday is 2 days ahead!
- * Sunday (day 0) -> Tuesday is 2 days ahead!
+ * Calculate 2-Day Advance Line Information across all 7 weekdays
+ * E.g., Saturday (6) -> Monday (1), Sunday (0) -> Tuesday (2), Monday (1) -> Wednesday (3), etc.
  */
 export interface TwoDayAdvanceInfo {
   isTwoDaysAhead: boolean;
   currentDayName: string;
-  targetDayName: "Monday" | "Tuesday";
+  targetDayName: DayOfWeek;
   targetDateStr: string;
   matchingVillages: Village[];
 }
@@ -308,39 +327,51 @@ export function getTwoDayAdvanceInfo(
   currentDate = new Date()
 ): TwoDayAdvanceInfo {
   const currentDayIndex = currentDate.getDay(); // 0 = Sun, 1 = Mon ... 6 = Sat
-  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const dayNames: DayOfWeek[] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ];
   const currentDayName = dayNames[currentDayIndex];
 
-  // Exactly 2 days ahead:
-  // Saturday (6) + 2 days = Monday (1)
-  // Sunday (0) + 2 days = Tuesday (2)
-  let targetDayName: "Monday" | "Tuesday" = "Monday";
+  const twoDaysAheadIdx = (currentDayIndex + 2) % 7;
+  const twoDaysAheadName = dayNames[twoDaysAheadIdx];
+  const twoDaysAheadVillages = villages.filter((v) => v.day === twoDaysAheadName);
+
+  let targetDayName: DayOfWeek = twoDaysAheadName;
   let daysToAdd = 2;
   let isTwoDaysAhead = false;
 
-  if (currentDayIndex === 6) {
-    // Today is Saturday -> Target is Monday (2 days ahead)
-    targetDayName = "Monday";
+  if (
+    twoDaysAheadVillages.length > 0 ||
+    twoDaysAheadName === "Monday" ||
+    twoDaysAheadName === "Tuesday"
+  ) {
+    targetDayName = twoDaysAheadName;
     daysToAdd = 2;
     isTwoDaysAhead = true;
-  } else if (currentDayIndex === 0) {
-    // Today is Sunday -> Target is Tuesday (2 days ahead)
-    targetDayName = "Tuesday";
-    daysToAdd = 2;
-    isTwoDaysAhead = true;
-  } else if (currentDayIndex === 5) {
-    // Friday -> upcoming Monday is 3 days ahead
-    targetDayName = "Monday";
-    daysToAdd = 3;
-  } else if (currentDayIndex === 1) {
-    // Monday -> upcoming Tuesday is 1 day ahead
-    targetDayName = "Tuesday";
-    daysToAdd = 1;
   } else {
-    // Other days default to next Monday
-    const diffToMon = (8 - currentDayIndex) % 7;
-    targetDayName = "Monday";
-    daysToAdd = diffToMon === 0 ? 7 : diffToMon;
+    // Look ahead 1..7 days for next configured line village day
+    let found = false;
+    for (let offset = 1; offset <= 7; offset++) {
+      const candidateName = dayNames[(currentDayIndex + offset) % 7];
+      if (villages.some((v) => v.day === candidateName)) {
+        targetDayName = candidateName;
+        daysToAdd = offset;
+        isTwoDaysAhead = offset === 2;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      const diffToMon = (8 - currentDayIndex) % 7;
+      targetDayName = "Monday";
+      daysToAdd = diffToMon === 0 ? 7 : diffToMon;
+    }
   }
 
   const targetDate = new Date(currentDate);
@@ -513,3 +544,41 @@ export function canAutoSendReminder(
 
   return true;
 }
+
+/**
+ * Determines whether the 2-Day WhatsApp Reminder banner should be shown.
+ * Hidden immediately whenever WhatsApp is disabled, 2-day reminders are off,
+ * all villages have reminders disabled, or all active borrowers have reminders off / keypad phone.
+ */
+export function shouldShowReminderBanner(
+  data: { villages: Village[]; borrowers: Record<string, Borrower[]> },
+  rules?: WhatsAppRules
+): boolean {
+  const r = rules || getWhatsAppRules();
+  if (!r.masterEnabled || !r.autoTwoDayReminder) return false;
+
+  const villages = data?.villages || [];
+  if (villages.length === 0) return false;
+
+  const enabledVillages = villages.filter(
+    (v) => !r.villageConfigs?.[v.id]?.disableReminder
+  );
+  if (enabledVillages.length === 0) return false;
+
+  const allBorrowers = Object.values(data?.borrowers || {}).flat();
+  if (allBorrowers.length > 0) {
+    const hasEligibleBorrower = enabledVillages.some((v) => {
+      const list = data.borrowers?.[v.id] || [];
+      return list.some((b) => {
+        if (isBorrowerClosed(b)) return false;
+        if (isBorrowerKeypad(b, r)) return false;
+        if (b.disableReminder || r.borrowerConfigs?.[b.id]?.disableReminder) return false;
+        return true;
+      });
+    });
+    if (!hasEligibleBorrower) return false;
+  }
+
+  return true;
+}
+

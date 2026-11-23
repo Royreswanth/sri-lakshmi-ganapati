@@ -30,9 +30,28 @@ import {
   Bell,
   BellOff,
   Filter,
+  LogOut,
+  ShieldCheck,
+  KeyRound,
+  Copy,
+  Check,
+  Ban,
+  BookOpen,
+  Calendar,
 } from "lucide-react";
-import { Village, BusinessProfile, Language, Borrower, ThemeMode, EmblemType, WhatsAppRules } from "../types";
+import {
+  Village,
+  BusinessProfile,
+  Language,
+  Borrower,
+  ThemeMode,
+  EmblemType,
+  WhatsAppRules,
+  DayOfWeek,
+  CloudLicenseRecord,
+} from "../types";
 import { translations } from "../translations";
+import { ALL_DAYS_MON_FIRST, translateDayName } from "../utils/dateUtils";
 import {
   generateBackupPayload,
   downloadBackupFile,
@@ -44,16 +63,45 @@ import {
   saveWhatsAppRules,
   isBorrowerKeypad,
 } from "../utils/whatsapp";
+import {
+  OWNER_WHATSAPP_DISPLAY,
+  PaidOrFreePlanId,
+  SUBSCRIPTION_PLANS,
+  applyActivationToProfile,
+  buildSubscriptionWhatsAppUrl,
+  evaluateSubscriptionAccess,
+  generateActivationKey,
+  getOrCreateDeviceId,
+  isOwnerAdminEmail,
+  normalizeDeviceId,
+  verifyActivationKey,
+} from "../utils/licenseUtils";
 import { BusinessEmblem } from "./BusinessEmblem";
 import {
   uploadCloudBackup,
   getCloudBackupsList,
   restoreFromCloudBackup,
   deleteCloudBackup,
-  getLenderCloudId,
+  signInWithGoogle,
+  signOutGoogle,
+  subscribeAuthState,
+  getCurrentGoogleUser,
+  grantOrUpdateCloudLicense,
+  revokeCloudLicense,
+  fetchAllCloudLicenses,
+  GoogleVaultUser,
   CloudBackupRecord,
 } from "../services/firebaseBackup";
 import { usePWAInstall } from "../hooks/usePWAInstall";
+
+export type SettingsSection =
+  | "main"
+  | "pin"
+  | "profile"
+  | "villages"
+  | "backup"
+  | "subscription"
+  | "whatsapp";
 
 interface SettingsTabProps {
   pin: string;
@@ -65,6 +113,9 @@ interface SettingsTabProps {
   }) => void;
   profile: BusinessProfile;
   onUpdateProfile: (newProfile: BusinessProfile) => void;
+  deviceId?: string;
+  requestedSection?: { section: SettingsSection; nonce: number } | null;
+  onBackupRecorded?: () => void;
   lang: Language;
   theme: ThemeMode;
   onToggleLang: () => void;
@@ -83,6 +134,9 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   onUpdateData,
   profile,
   onUpdateProfile,
+  deviceId: propDeviceId,
+  requestedSection,
+  onBackupRecorded,
   lang,
   theme,
   onToggleLang,
@@ -93,9 +147,14 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   expensesCount = 0,
   showToast,
 }) => {
-  const [activeSection, setActiveSection] = useState<
-    "main" | "pin" | "profile" | "villages" | "backup" | "subscription" | "whatsapp"
-  >("main");
+  const resolvedDeviceId = propDeviceId || getOrCreateDeviceId();
+  const [activeSection, setActiveSection] = useState<SettingsSection>("main");
+
+  useEffect(() => {
+    if (requestedSection) {
+      setActiveSection(requestedSection.section);
+    }
+  }, [requestedSection]);
   const [showClearModal, setShowClearModal] = useState(false);
   const [resetProfileToo, setResetProfileToo] = useState(false);
 
@@ -121,7 +180,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
 
   // Village Form
   const [vName, setVName] = useState("");
-  const [vDay, setVDay] = useState<"Monday" | "Tuesday">("Monday");
+  const [vDay, setVDay] = useState<DayOfWeek>("Monday");
   const [deleteVillageConfirm, setDeleteVillageConfirm] = useState<Village | null>(null);
 
   // Business Profile Form
@@ -253,6 +312,10 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   const handleDownloadBackup = () => {
     const payload = generateBackupPayload();
     downloadBackupFile(payload);
+    try {
+      localStorage.setItem("slg_local_backup_at", new Date().toISOString());
+    } catch {}
+    onBackupRecorded?.();
     showToast(
       lang === "te" ? "లైన్ బ్యాకప్ డౌన్‌లోడ్ పూర్తయింది ✓" : "Backup downloaded ✓",
       "success"
@@ -262,6 +325,10 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   const handleShareBackup = async () => {
     const payload = generateBackupPayload();
     await shareBackupFile(payload);
+    try {
+      localStorage.setItem("slg_local_backup_at", new Date().toISOString());
+    } catch {}
+    onBackupRecorded?.();
   };
 
   const handleFileRestore = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -286,26 +353,187 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
     reader.readAsText(file);
   };
 
-  // Cloud Backup State & Handlers
+  // Cloud Backup & Google Auth State & Handlers
+  const [googleUser, setGoogleUser] = useState<GoogleVaultUser | null>(() =>
+    getCurrentGoogleUser()
+  );
+  const [googleSigningIn, setGoogleSigningIn] = useState(false);
   const [cloudSyncing, setCloudSyncing] = useState(false);
   const [cloudBackups, setCloudBackups] = useState<CloudBackupRecord[]>([]);
   const [loadingCloudBackups, setLoadingCloudBackups] = useState(false);
+  const [cloudError, setCloudError] = useState<string | null>(null);
   const [lastCloudTime, setLastCloudTime] = useState<string>(
     () => localStorage.getItem("slg_last_cloud_backup") || ""
   );
   const [autoCloudEnabled, setAutoCloudEnabled] = useState<boolean>(
     () => localStorage.getItem("slg_auto_cloud_disabled") !== "true"
   );
-  const [cloudId] = useState<string>(() => getLenderCloudId());
   const [confirmRestoreCloud, setConfirmRestoreCloud] = useState<CloudBackupRecord | null>(null);
 
+  // Subscription Key & Owner Admin Console State
+  const [renewKeyInput, setRenewKeyInput] = useState("");
+  const [renewKeyErr, setRenewKeyErr] = useState("");
+  const [copiedDevice, setCopiedDevice] = useState(false);
+
+  const [adminDeviceId, setAdminDeviceId] = useState("");
+  const [adminLenderEmail, setAdminLenderEmail] = useState("");
+  const [adminBizName, setAdminBizName] = useState("");
+  const [adminPlan, setAdminPlan] = useState<PaidOrFreePlanId>("yearly");
+  const [adminGeneratedKey, setAdminGeneratedKey] = useState<{
+    key: string;
+    expiresAt: string;
+    deviceId: string;
+  } | null>(null);
+  const [adminSavingLicense, setAdminSavingLicense] = useState(false);
+  const [adminLicenses, setAdminLicenses] = useState<CloudLicenseRecord[]>([]);
+  const [loadingAdminLicenses, setLoadingAdminLicenses] = useState(false);
+  const [copiedGeneratedKey, setCopiedGeneratedKey] = useState(false);
+
+  const isOwnerAdmin = isOwnerAdminEmail(
+    googleUser?.email,
+    googleUser?.emailVerified
+  );
+
+  const subscriptionAccess = evaluateSubscriptionAccess({
+    profile,
+    userEmail: googleUser?.email,
+    emailVerified: googleUser?.emailVerified,
+  });
+
+  useEffect(() => {
+    const unsubscribe = subscribeAuthState((user) => {
+      setGoogleUser(user);
+      if (!user) {
+        setCloudBackups([]);
+        setAdminLicenses([]);
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  const loadAdminLicenses = async () => {
+    if (!isOwnerAdminEmail(getCurrentGoogleUser()?.email, getCurrentGoogleUser()?.emailVerified)) {
+      return;
+    }
+    setLoadingAdminLicenses(true);
+    try {
+      const list = await fetchAllCloudLicenses();
+      setAdminLicenses(list);
+    } catch (err) {
+      console.warn("Could not load admin licenses", err);
+    } finally {
+      setLoadingAdminLicenses(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeSection === "subscription" && isOwnerAdmin) {
+      void loadAdminLicenses();
+    }
+  }, [activeSection, isOwnerAdmin]);
+
+  const handleRenewWithKey = (e: React.FormEvent) => {
+    e.preventDefault();
+    setRenewKeyErr("");
+    const check = verifyActivationKey(renewKeyInput, resolvedDeviceId);
+    if (!check.valid || !check.plan || !check.expiresAt) {
+      setRenewKeyErr(check.error || "Invalid Activation Key");
+      return;
+    }
+    const updated = applyActivationToProfile(profile, {
+      plan: check.plan,
+      expiresAt: check.expiresAt,
+      licenseKey: renewKeyInput.trim().toUpperCase(),
+      deviceId: resolvedDeviceId,
+      activatedBy: "activation_key",
+    });
+    onUpdateProfile(updated);
+    setRenewKeyInput("");
+    showToast(
+      lang === "te"
+        ? `సబ్‌స్క్రిప్షన్ యాక్టివేట్ అయింది (${check.expiresAt} వరకు) ✓`
+        : `License activated until ${check.expiresAt} ✓`,
+      "success"
+    );
+  };
+
+  const handleAdminIssueLicense = async (
+    overridePlan?: PaidOrFreePlanId,
+    overrideDeviceId?: string,
+    overrideBizName?: string
+  ) => {
+    const targetPlan = overridePlan || adminPlan;
+    const rawDev = overrideDeviceId || adminDeviceId || resolvedDeviceId;
+    const normDev = normalizeDeviceId(rawDev);
+    if (!normDev) {
+      showToast("Enter lender's Device ID (e.g. LBP-XXXX-XXXX)", "error");
+      return;
+    }
+
+    const gen = generateActivationKey(normDev, targetPlan);
+    setAdminGeneratedKey({
+      key: gen.key,
+      expiresAt: gen.expiresAt,
+      deviceId: normDev,
+    });
+
+    if (isOwnerAdmin) {
+      setAdminSavingLicense(true);
+      try {
+        const res = await grantOrUpdateCloudLicense({
+          deviceId: normDev,
+          lenderEmail: adminLenderEmail.trim(),
+          businessName:
+            (overrideBizName || adminBizName).trim() || "LineBook Lender",
+          plan: targetPlan,
+        });
+        if (res.success) {
+          showToast(res.message, "success");
+          await loadAdminLicenses();
+        } else {
+          showToast(res.message, "error");
+        }
+      } catch (err: any) {
+        showToast(err?.message || "Failed to save cloud license", "error");
+      } finally {
+        setAdminSavingLicense(false);
+      }
+    } else {
+      showToast("Offline key generated ✓", "success");
+    }
+  };
+
+  const handleAdminRevoke = async (licenseId: string) => {
+    try {
+      const res = await revokeCloudLicense(licenseId);
+      if (res.success) {
+        showToast(res.message, "info");
+        await loadAdminLicenses();
+      } else {
+        showToast(res.message, "error");
+      }
+    } catch (err: any) {
+      showToast(err?.message || "Failed to revoke license", "error");
+    }
+  };
+
   const fetchCloudBackups = async () => {
+    if (!getCurrentGoogleUser()?.emailVerified) {
+      setCloudBackups([]);
+      return;
+    }
     setLoadingCloudBackups(true);
+    setCloudError(null);
     try {
       const list = await getCloudBackupsList();
       setCloudBackups(list);
-    } catch (e) {
+    } catch (e: any) {
       console.warn("Failed to load cloud backups", e);
+      setCloudError(
+        lang === "te"
+          ? "క్లౌడ్ రికార్డులు లోడ్ కాలేదు. ఇంటర్నెట్ తనిఖీ చేయండి."
+          : "Could not load cloud snapshots. Please check connection."
+      );
     } finally {
       setLoadingCloudBackups(false);
     }
@@ -313,13 +541,51 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
 
   useEffect(() => {
     if (activeSection === "backup") {
-      fetchCloudBackups();
       setLastCloudTime(localStorage.getItem("slg_last_cloud_backup") || "");
+      if (googleUser?.emailVerified) {
+        fetchCloudBackups();
+      } else {
+        setCloudBackups([]);
+      }
     }
-  }, [activeSection]);
+  }, [activeSection, googleUser?.uid]);
+
+  const handleGoogleSignIn = async () => {
+    setGoogleSigningIn(true);
+    setCloudError(null);
+    try {
+      const res = await signInWithGoogle();
+      if (res.success && res.user) {
+        setGoogleUser(res.user);
+        showToast(
+          lang === "te"
+            ? `${res.user.email} తో క్లౌడ్ కనెక్ట్ అయింది ✓`
+            : res.message,
+          "success"
+        );
+      } else {
+        showToast(res.message, "error");
+      }
+    } finally {
+      setGoogleSigningIn(false);
+    }
+  };
+
+  const handleGoogleSignOut = async () => {
+    await signOutGoogle();
+    setGoogleUser(null);
+    setCloudBackups([]);
+    showToast(
+      lang === "te"
+        ? "క్లౌడ్ ఖాతా లాగ్‌అవుట్ అయింది (స్థానిక డేటా సురక్షితం)"
+        : "Signed out of Cloud Vault (local ledger untouched)",
+      "info"
+    );
+  };
 
   const handleSyncCloud = async () => {
     setCloudSyncing(true);
+    setCloudError(null);
     try {
       const res = await uploadCloudBackup(false);
       if (res.success) {
@@ -330,6 +596,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
           "success"
         );
         setLastCloudTime(res.exportedAt || new Date().toISOString());
+        onBackupRecorded?.();
         await fetchCloudBackups();
       } else {
         showToast(res.message, "error");
@@ -380,26 +647,30 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   };
 
   const handleDeleteCloudSnapshot = async (backupId: string) => {
-    const ok = await deleteCloudBackup(backupId);
-    if (ok) {
-      setCloudBackups((prev) => prev.filter((b) => b.backupId !== backupId));
-      showToast(
-        lang === "te" ? "క్లౌడ్ స్నాప్‌షాట్ తొలగించబడింది" : "Cloud snapshot deleted",
-        "info"
-      );
-    } else {
-      showToast("Failed to delete snapshot", "error");
+    try {
+      const ok = await deleteCloudBackup(backupId);
+      if (ok) {
+        setCloudBackups((prev) => prev.filter((b) => b.backupId !== backupId));
+        showToast(
+          lang === "te" ? "క్లౌడ్ స్నాప్‌షాట్ తొలగించబడింది" : "Cloud snapshot deleted",
+          "info"
+        );
+      } else {
+        showToast("Failed to delete snapshot", "error");
+      }
+    } catch (e: any) {
+      showToast(e?.message || "Failed to delete snapshot", "error");
     }
   };
 
   return (
-    <div className="pb-28 px-4 pt-3 max-w-lg mx-auto space-y-4">
+    <div className="pb-28 px-4 pt-3 max-w-lg md:max-w-3xl lg:max-w-5xl mx-auto space-y-4">
       {/* Prominent Back Button on all sub-sections */}
       {activeSection !== "main" && (
         <div className="flex items-center gap-3 mb-2">
           <button
             onClick={() => setActiveSection("main")}
-            className="w-10 h-10 rounded-full flex items-center justify-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 shadow-sm cursor-pointer hover:scale-105 active:scale-95 transition-all"
+            className="w-11 h-11 rounded-full flex items-center justify-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 shadow-sm cursor-pointer hover:scale-105 active:scale-95 transition-all"
             title="Go Back"
           >
             <ArrowLeft className="w-5 h-5" />
@@ -430,7 +701,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 ? "వ్యాపార ప్రొఫైల్ & లోగో"
                 : "Business Profile & Logo"}
             </h2>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
+            <p className="text-[11px] text-slate-600 dark:text-slate-400 font-medium">
               {lang === "te" ? "సెట్టింగ్స్ మెనూ కి తిరిగి వెళ్ళండి" : "Tap back to return"}
             </p>
           </div>
@@ -439,184 +710,237 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
 
       {/* MAIN SETTINGS MENU */}
       {activeSection === "main" && (
-        <div className="space-y-3.5">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
           {/* Software Plan Banner */}
-          <div
+          <button
+            type="button"
             onClick={() => setActiveSection("subscription")}
-            style={{ backgroundColor: "#8c4747" }}
-            className="rounded-3xl p-5 cursor-pointer border-2 border-amber-500/50 hover:border-amber-500/80 transition-all flex items-center justify-between shadow-sm"
+            className="md:col-span-2 text-left rounded-3xl p-5 cursor-pointer bg-gradient-to-br from-[#0B1728] via-[#13294B] to-[#0A121E] text-white border border-amber-400/50 hover:border-amber-400 transition-all flex items-center justify-between gap-3 shadow-md"
           >
-            <div className="flex items-center gap-3.5">
-              <div
-                style={{ backgroundColor: "#d98509" }}
-                className="w-12 h-12 rounded-2xl text-slate-950 flex items-center justify-center shadow-xs shrink-0"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="24"
-                  height="24"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="lucide lucide-crown w-6 h-6"
-                  style={{ backgroundColor: "#de762d" }}
-                  aria-hidden="true"
-                >
-                  <path d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.02 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z" />
-                  <path d="M5 21h14" style={{ backgroundColor: "#b79b08" }} />
-                </svg>
+            <div className="flex items-center gap-3.5 min-w-0">
+              <div className="w-12 h-12 rounded-2xl bg-amber-400/20 border border-amber-400/40 text-amber-300 flex items-center justify-center shrink-0">
+                <Crown className="w-6 h-6" />
               </div>
-              <div>
-                <span className="text-[10px] font-black uppercase tracking-wider text-amber-800 dark:text-amber-300 block">
-                  {lang === "te" ? "వాణిజ్య సాఫ్ట్‌వేర్ సభ్యత్వం" : "Commercial Software Membership"}
-                </span>
-                <h3 className="text-lg font-black text-slate-950 dark:text-white leading-tight">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-amber-300">
+                    {lang === "te" ? "వాణిజ్య సాఫ్ట్‌వేర్ సభ్యత్వం" : "SaaS Subscription"}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[9px] font-black uppercase">
+                    {subscriptionAccess.isOwner
+                      ? "OWNER ADMIN"
+                      : subscriptionAccess.reason === "lifetime_free"
+                      ? "FREE PASS"
+                      : `ACTIVE · ${subscriptionAccess.daysRemaining ?? 0}d`}
+                  </span>
+                </div>
+                <h3 className="text-lg font-black text-white leading-tight mt-0.5">
                   LineBook Pro
                 </h3>
-                <p className="text-[11px] font-semibold text-slate-700 dark:text-slate-200 mt-0.5">
-                  6 Months (₹1,199) · 12 Months (₹1,999) · Custom App
+                <p className="text-[11px] font-medium text-slate-200 mt-0.5">
+                  6 Months (₹1,599) · 12 Months (₹2,599) · Custom App (₹4,999+)
                 </p>
               </div>
             </div>
-            <div className="px-3.5 py-1.5 rounded-full bg-[#1E3A8A] text-white font-bold text-xs shadow-sm shrink-0">
-              {lang === "te" ? "ప్లాన్లు" : "Plans"}
+            <div className="min-h-[36px] px-4 py-1.5 rounded-full bg-amber-400 text-slate-950 font-black text-xs shadow-sm shrink-0 flex items-center">
+              {isOwnerAdmin
+                ? lang === "te"
+                  ? "అడ్మిన్"
+                  : "Manage"
+                : lang === "te"
+                ? "ప్లాన్లు"
+                : "Plans"}
             </div>
-          </div>
+          </button>
 
-          {/* Dark / Light Mode Toggle Card (C-0.1 Item 7) */}
-          <div
+          {/* Dark / Light Mode Toggle Card */}
+          <button
+            type="button"
             onClick={onToggleTheme}
-            className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between cursor-pointer hover:border-slate-400 dark:hover:border-slate-700 transition-all"
+            className="text-left min-h-[72px] rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between gap-3 cursor-pointer hover:border-slate-400 dark:hover:border-slate-600 transition-all"
           >
             <div className="flex items-center gap-3">
-              <div
-                style={{ backgroundColor: "#000000" }}
-                className="w-10 h-10 rounded-xl text-amber-400 flex items-center justify-center"
-              >
-                {theme === "dark" ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5 text-slate-200" />}
+              <div className="w-10 h-10 rounded-xl bg-slate-900 dark:bg-amber-500/20 text-amber-300 dark:text-amber-300 flex items-center justify-center shrink-0">
+                {theme === "dark" ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
               </div>
               <div>
                 <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
                   {lang === "te" ? "డిస్ప్లే థీమ్ (Theme)" : "Appearance & Theme"}
                 </h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
+                <p className="text-xs text-slate-600 dark:text-slate-400">
                   {theme === "dark"
                     ? lang === "te"
                       ? "డార్క్ మోడ్ యాక్టివ్ (రాత్రి లైన్)"
                       : "Dark Mode Active (Night Line)"
                     : lang === "te"
                     ? "లైట్ మోడ్ యాక్టివ్ (పగలు)"
-                    : "Light Mode Active (Day Soft Pearl)"}
+                    : "Light Mode Active (Daylight)"}
                 </p>
               </div>
             </div>
-            <span className="font-bold text-xs px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700">
+            <span className="font-bold text-xs px-3 py-1.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 shrink-0">
               {theme === "dark" ? "☀️ Light" : "🌙 Dark"}
             </span>
-          </div>
+          </button>
 
           {/* Quick Language Toggle */}
-          <div
+          <button
+            type="button"
             onClick={onToggleLang}
-            className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between cursor-pointer hover:border-slate-400 dark:hover:border-slate-700 transition-all"
+            className="text-left min-h-[72px] rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between gap-3 cursor-pointer hover:border-slate-400 dark:hover:border-slate-600 transition-all"
           >
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+              <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 flex items-center justify-center shrink-0">
                 <Globe className="w-5 h-5" />
               </div>
               <div>
                 <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
                   {lang === "te" ? "యాప్ భాష (Language)" : "Language"}
                 </h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
+                <p className="text-xs text-slate-600 dark:text-slate-400">
                   {lang === "en" ? "English active" : "తెలుగు యాక్టివ్"}
                 </p>
               </div>
             </div>
-            <span className="font-bold text-xs px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-blue-900 dark:text-blue-300 border border-slate-200 dark:border-slate-700">
+            <span className="font-bold text-xs px-3 py-1.5 rounded-full bg-slate-100 dark:bg-slate-800 text-blue-900 dark:text-blue-300 border border-slate-200 dark:border-slate-700 shrink-0">
               {lang === "en" ? "తెలుగుకి మార్చండి" : "Switch to English"}
             </span>
-          </div>
+          </button>
 
-          {/* Business / Line Name (Receipt Branding & Custom Logo) */}
-          <div
+          {/* Business / Line Name */}
+          <button
+            type="button"
             onClick={() => setActiveSection("profile")}
-            className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-amber-500/40 dark:border-amber-500/30 shadow-sm flex items-center justify-between cursor-pointer hover:border-amber-500 transition-all"
+            className="text-left min-h-[72px] rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-amber-400/50 dark:border-amber-500/30 shadow-sm flex items-center justify-between gap-3 cursor-pointer hover:border-amber-500 transition-all"
           >
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 min-w-0">
               <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-900/30 flex items-center justify-center p-1.5 shrink-0">
                 <BusinessEmblem emblem={profile.emblem || "ganesha"} size={26} color={profile.brandColor || "#D97706"} />
               </div>
-              <div>
+              <div className="min-w-0">
                 <h4
-                  className="font-black text-sm truncate max-w-[200px]"
+                  className="font-black text-sm truncate"
                   style={{ color: profile.brandColor || "#D97706" }}
                 >
                   {profile.businessName || "LineBook Pro"}
                 </h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
+                <p className="text-xs text-slate-600 dark:text-slate-400 truncate">
                   {lang === "te"
-                    ? "🏢 మీ లైన్ పేరు, లోగో & రశీదు వివరాలు మార్చండి"
-                    : "🏢 Business / Line Name, Emblem & Brand Color"}
+                    ? "మీ లైన్ పేరు, లోగో & రశీదు వివరాలు మార్చండి"
+                    : "Business / Line Name, Emblem & Brand Color"}
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300">
-                {lang === "te" ? "మార్చండి" : "Edit Name"}
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60">
+                {lang === "te" ? "మార్చండి" : "Edit"}
               </span>
               <span className="text-slate-400">›</span>
             </div>
-          </div>
+          </button>
 
           {/* Line Villages */}
-          <div
+          <button
+            type="button"
             onClick={() => setActiveSection("villages")}
-            className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between cursor-pointer hover:border-slate-400 dark:hover:border-slate-700 transition-all"
+            className="text-left min-h-[72px] rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between gap-3 cursor-pointer hover:border-slate-400 dark:hover:border-slate-600 transition-all"
           >
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 flex items-center justify-center">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 flex items-center justify-center shrink-0">
                 <Plus className="w-5 h-5" />
               </div>
               <div>
                 <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
                   {lang === "te" ? "లైన్ గ్రామాలు (Line Villages)" : "Line Villages"}
                 </h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {data.villages.length} {lang === "te" ? "గ్రామాలు నమోదయ్యాయి" : "villages active"}
+                <p className="text-xs text-slate-600 dark:text-slate-400 tabular-nums">
+                  {data.villages.length} {lang === "te" ? "గ్రామాలు నమోదయ్యాయి" : "villages active"} ·{" "}
+                  {profile.lineDaysMode === "daily"
+                    ? lang === "te"
+                      ? "ప్రతి రోజు"
+                      : "Daily"
+                    : (profile.lineDays || ["Monday", "Tuesday"]).map((d) => d.slice(0, 3)).join(", ")}
                 </p>
               </div>
             </div>
             <span className="text-slate-400">›</span>
+          </button>
+
+          {/* Daily Cashbook Enable / Disable Toggle */}
+          <div className="min-h-[72px] rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-teal-50 dark:bg-teal-900/30 text-teal-700 dark:text-teal-400 flex items-center justify-center shrink-0">
+                <BookOpen className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
+                  {lang === "te" ? "రోజువారీ క్యాష్‌బుక్ (Daily Cashbook)" : "Daily Cashbook"}
+                </h4>
+                <p className="text-xs text-slate-600 dark:text-slate-400 truncate">
+                  {profile.enableDailyCashbook !== false
+                    ? lang === "te"
+                      ? "హోమ్ & రిపోర్టులలో యాక్టివ్‌గా ఉంది"
+                      : "Shown on Home & Reports (Tap to disable)"
+                    : lang === "te"
+                    ? "ప్రస్తుతం ఆఫ్‌లో ఉంది (రికార్డులు సురక్షితం)"
+                    : "Disabled (Hidden from Home & Reports)"}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const nextEnabled = profile.enableDailyCashbook === false;
+                onUpdateProfile({ ...profile, enableDailyCashbook: nextEnabled });
+                showToast(
+                  nextEnabled
+                    ? lang === "te"
+                      ? "రోజువారీ క్యాష్‌బుక్ ఆన్ చేయబడింది ✓"
+                      : "Daily Cashbook enabled ✓"
+                    : lang === "te"
+                    ? "రోజువారీ క్యాష్‌బుక్ ఆఫ్ చేయబడింది"
+                    : "Daily Cashbook disabled",
+                  nextEnabled ? "success" : "info"
+                );
+              }}
+              className={`min-h-[38px] px-3.5 py-1.5 rounded-xl font-extrabold text-xs shrink-0 cursor-pointer transition-all ${
+                profile.enableDailyCashbook !== false
+                  ? "bg-teal-600 text-white hover:bg-teal-700"
+                  : "bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300"
+              }`}
+            >
+              {profile.enableDailyCashbook !== false
+                ? lang === "te"
+                  ? "ఆన్ (ON)"
+                  : "Enabled"
+                : lang === "te"
+                ? "ఆఫ్ (OFF)"
+                : "Disabled"}
+            </button>
           </div>
 
-          {/* WhatsApp Rules & Automation (Requirement 2) */}
-          <div
+          {/* WhatsApp Rules & Automation */}
+          <button
+            type="button"
             onClick={() => setActiveSection("whatsapp")}
-            className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-emerald-500/40 dark:border-emerald-500/30 shadow-sm flex items-center justify-between cursor-pointer hover:border-emerald-500 transition-all"
+            className="text-left min-h-[72px] rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between gap-3 cursor-pointer hover:border-emerald-500 transition-all"
           >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 flex items-center justify-center shrink-0">
                 <MessageCircle className="w-5 h-5" />
               </div>
-              <div>
-                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
-                  <span>{lang === "te" ? "వాట్సాప్ ఆటోమేషన్ & నియమాలు" : "WhatsApp Automation & Rules"}</span>
-                  {waRules.masterEnabled ? (
-                    <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 text-[9px] font-black flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                      ACTIVE
-                    </span>
-                  ) : (
-                    <span className="px-1.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 text-[9px] font-bold">
-                      OFF
+              <div className="min-w-0">
+                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                  <span className="truncate">
+                    {lang === "te" ? "వాట్సాప్ ఆటోమేషన్ & నియమాలు" : "WhatsApp Automation & Rules"}
+                  </span>
+                  {!waRules.masterEnabled && (
+                    <span className="px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 text-[10px] font-bold shrink-0">
+                      Off
                     </span>
                   )}
                 </h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
+                <p className="text-xs text-slate-600 dark:text-slate-400 truncate">
                   {lang === "te"
                     ? "ఆటో-రశీదులు, 2-రోజుల రిమైండర్లు & కీప్యాడ్ ఫోన్లు"
                     : "Auto-receipts, 2-day advance reminders & keypad mobiles"}
@@ -624,37 +948,42 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               </div>
             </div>
             <span className="text-slate-400">›</span>
-          </div>
+          </button>
 
-          {/* Backup & Restore (Fix B1 + Firebase Cloud Auto-Sync) */}
-          <div
+          {/* Cloud Backup & Restore */}
+          <button
+            type="button"
             onClick={() => setActiveSection("backup")}
-            className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-blue-500/40 dark:border-blue-500/30 shadow-sm flex items-center justify-between cursor-pointer hover:border-blue-500 transition-all"
+            className="text-left min-h-[72px] rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between gap-3 cursor-pointer hover:border-blue-500 transition-all"
           >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 flex items-center justify-center shrink-0">
                 <Cloud className="w-5 h-5" />
               </div>
-              <div>
-                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+              <div className="min-w-0">
+                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100 flex items-center gap-2">
                   <span>{lang === "te" ? "క్లౌడ్ బ్యాకప్ & రీస్టోర్" : "Cloud Backup & Restore"}</span>
-                  <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 text-[9px] font-black flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                    CLOUD VAULT
-                  </span>
+                  {googleUser && (
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold shrink-0">
+                      Google ✓
+                    </span>
+                  )}
                 </h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {lang === "te"
-                    ? "ఫైర్‌బేస్ ఆటో-సింక్ & వాట్సాప్ బ్యాకప్"
-                    : "Firebase Auto-Sync & Local Backup"}
+                <p className="text-xs text-slate-600 dark:text-slate-400 truncate">
+                  {googleUser
+                    ? googleUser.email
+                    : lang === "te"
+                    ? "కొత్త ఫోన్‌కు Google సైన్-ఇన్ ద్వారా సింక్ చేయండి"
+                    : "Sign in with Google for Cross-Phone Sync & JSON"}
                 </p>
               </div>
             </div>
             <span className="text-slate-400">›</span>
-          </div>
+          </button>
 
-          {/* Install Mobile App (PWA) & Offline Village Mode */}
-          <div
+          {/* Install Mobile App (PWA) */}
+          <button
+            type="button"
             onClick={async () => {
               if (isInstalled) {
                 showToast(
@@ -677,27 +1006,23 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 setShowPwaGuide(true);
               }
             }}
-            className="rounded-2xl p-4 bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent dark:from-amber-500/20 dark:to-transparent border border-amber-500/40 dark:border-amber-500/30 shadow-sm flex items-center justify-between cursor-pointer hover:border-amber-500 transition-all"
+            className="text-left min-h-[72px] rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-amber-400/50 dark:border-amber-500/30 shadow-sm flex items-center justify-between gap-3 cursor-pointer hover:border-amber-500 transition-all"
           >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 flex items-center justify-center shrink-0">
                 <Smartphone className="w-5 h-5" />
               </div>
-              <div>
-                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100 flex items-center gap-1.5">
+              <div className="min-w-0">
+                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100 flex items-center gap-2">
                   <span>{lang === "te" ? "మొబైల్ యాప్ (PWA)" : "Install Mobile App (PWA)"}</span>
-                  {isInstalled ? (
-                    <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 text-[9px] font-black flex items-center gap-1">
-                      <CheckCircle2 className="w-2.5 h-2.5" />
-                      {lang === "te" ? "ఇన్‌స్టాల్ అయింది" : "INSTALLED"}
-                    </span>
-                  ) : (
-                    <span className="px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300 text-[9px] font-black">
-                      OFFLINE READY
+                  {isInstalled && (
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 text-[10px] font-bold flex items-center gap-1 shrink-0">
+                      <CheckCircle2 className="w-3 h-3" />
+                      {lang === "te" ? "ఇన్‌స్టాల్ అయింది" : "Installed"}
                     </span>
                   )}
                 </h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
+                <p className="text-xs text-slate-600 dark:text-slate-400 truncate">
                   {isInstalled
                     ? lang === "te"
                       ? "100% ఆఫ్‌లైన్ విలేజ్ మోడ్ సపోర్ట్"
@@ -709,44 +1034,46 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               </div>
             </div>
             <span className="text-slate-400">›</span>
-          </div>
+          </button>
 
-          {/* Change PIN (Fix D1) */}
-          <div
+          {/* Change PIN */}
+          <button
+            type="button"
             onClick={() => setActiveSection("pin")}
-            className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between cursor-pointer hover:border-slate-400 dark:hover:border-slate-700 transition-all"
+            className="text-left min-h-[72px] rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between gap-3 cursor-pointer hover:border-slate-400 dark:hover:border-slate-600 transition-all"
           >
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+              <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 flex items-center justify-center shrink-0">
                 <Lock className="w-5 h-5" />
               </div>
               <div>
                 <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
                   {lang === "te" ? "లాక్ పిన్ మార్చండి" : "Change Security PIN"}
                 </h4>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
+                <p className="text-xs text-slate-600 dark:text-slate-400">
                   {lang === "te" ? "ఖచ్చితంగా 4 అంకెల పిన్" : "Strictly 4 numeric digits"}
                 </p>
               </div>
             </div>
             <span className="text-slate-400">›</span>
-          </div>
+          </button>
 
           {/* Start Fresh / Clear All Data */}
           {onClearAllData && (
-            <div
+            <button
+              type="button"
               onClick={() => setShowClearModal(true)}
-              className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-red-200 dark:border-red-900/40 shadow-sm flex items-center justify-between cursor-pointer hover:border-red-400 transition-all"
+              className="md:col-span-2 text-left min-h-[72px] rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-red-200 dark:border-red-900/50 shadow-sm flex items-center justify-between gap-3 cursor-pointer hover:border-red-400 transition-all"
             >
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 flex items-center justify-center">
+                <div className="w-10 h-10 rounded-xl bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-400 flex items-center justify-center shrink-0">
                   <Trash2 className="w-5 h-5" />
                 </div>
                 <div>
                   <h4 className="font-bold text-sm text-red-700 dark:text-red-400">
                     {lang === "te" ? "అన్ని పరీక్ష డేటా తొలగించండి (Start Fresh)" : "Clear All Data / Start Fresh"}
                   </h4>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                  <p className="text-xs text-slate-600 dark:text-slate-400">
                     {lang === "te"
                       ? "గ్రామాలు, ఖాతాదారులు & టెస్ట్ వసూళ్లను క్లియర్ చేయండి"
                       : "Wipe preview/test villages, borrowers & collections"}
@@ -754,112 +1081,482 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 </div>
               </div>
               <span className="text-slate-400">›</span>
-            </div>
+            </button>
           )}
 
           {/* Lock App Now Button */}
           <button
+            type="button"
             onClick={onLock}
-            style={{ backgroundColor: "#000000" }}
-            className="w-full py-3.5 rounded-2xl border border-red-200 dark:border-red-900/50 text-white font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-98 transition-all shadow-sm"
+            className="md:col-span-2 w-full min-h-[48px] py-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 dark:bg-rose-950/70 dark:hover:bg-rose-900/80 border border-slate-800 dark:border-rose-800/70 text-white font-bold text-sm flex items-center justify-center gap-2 cursor-pointer active:scale-98 transition-all shadow-sm"
           >
             <Lock className="w-4 h-4" />
-            <span style={{ backgroundColor: "#000000", color: "#ffffff" }}>
+            <span>
               {lang === "te" ? "యాప్ లాక్ చేయండి" : "Lock Application Now"}
             </span>
           </button>
+
+          {/* LineBook Pro Commercial Version & Device Footer */}
+          <div className="md:col-span-2 rounded-2xl p-4 bg-white/80 dark:bg-[#131B2E]/80 border border-slate-200 dark:border-slate-800 text-center space-y-1">
+            <div className="text-xs font-black text-slate-800 dark:text-slate-100">
+              LineBook Pro · v4.0
+            </div>
+            <div className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+              {lang === "te"
+                ? "100% ఆఫ్‌లైన్ విలేజ్ మోడ్ · క్లౌడ్ & ఫైల్ వాల్ట్ సిద్ధం"
+                : "100% Offline-First Line OS · Cloud & Local Vault Ready"}
+            </div>
+            <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400 select-all">
+              ID: {resolvedDeviceId}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* SUBSCRIPTION PLANS (Exactly 3 Plans: 6 Months, 12 Months, Custom App) */}
+      {/* SUBSCRIPTION PLANS, LICENSE STATUS & OWNER ADMIN CONSOLE */}
       {activeSection === "subscription" && (
         <div className="space-y-4">
-          <div className="rounded-3xl p-5 text-center bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800 shadow-sm">
-            <div className="w-14 h-14 rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto mb-2">
-              <Crown className="w-8 h-8" />
+          {/* 1. Active License Status & Device ID Card */}
+          <div className="rounded-3xl p-5 bg-gradient-to-br from-[#0B1728] via-[#13294B] to-[#0A121E] text-white border border-amber-400/40 shadow-md space-y-3.5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-amber-400/20 border border-amber-400/40 text-amber-300 flex items-center justify-center shrink-0">
+                  <Crown className="w-6 h-6" />
+                </div>
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-wider text-amber-300 block">
+                    {lang === "te" ? "ప్రస్తుత లైసెన్స్ స్థితి" : "Current License Status"}
+                  </span>
+                  <h3 className="text-lg font-black text-white">
+                    {subscriptionAccess.planLabel}
+                  </h3>
+                  <p className="text-xs text-slate-200 mt-0.5">
+                    {subscriptionAccess.isOwner
+                      ? lang === "te"
+                        ? "యాజమాని అడ్మిన్ యాక్సెస్ (పూర్తి నియంత్రణ)"
+                        : "Verified Owner Admin Account"
+                      : subscriptionAccess.reason === "lifetime_free"
+                      ? lang === "te"
+                        ? "జీవితకాల ఉచిత ఫ్యామిలీ పాస్ యాక్టివ్ ✓"
+                        : "Lifetime Free Family Pass Active ✓"
+                      : `${
+                          lang === "te" ? "గడువు తేదీ:" : "Valid until"
+                        } ${subscriptionAccess.expiresAt} (${
+                          subscriptionAccess.daysRemaining ?? 0
+                        } ${lang === "te" ? "రోజులు మిగిలాయి" : "days left"})`}
+                  </p>
+                </div>
+              </div>
+              <span className="px-2.5 py-1 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[10px] font-black uppercase shrink-0">
+                ACTIVE ✓
+              </span>
             </div>
-            <h3 className="text-xl font-black text-slate-900 dark:text-slate-100">
-              {lang === "te" ? "లైన్‌బుక్ ప్రో ప్లాన్లు" : "LineBook Pro Plans"}
-            </h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-xs mx-auto">
-              {lang === "te"
-                ? "గ్రామీణ మైక్రోఫైనాన్స్ వ్యాపారుల కోసం ప్రత్యేకంగా రూపొందించబడింది. ఉచిత ప్లాన్ లేదు."
-                : "Engineered for weekly village micro-lenders. All features included in every plan."}
-            </p>
+
+            <div className="rounded-2xl bg-black/35 border border-white/15 p-3 flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-300 block">
+                  {lang === "te" ? "ఈ ఫోన్ డివైస్ ఐడీ" : "Device ID"}
+                </span>
+                <span className="font-mono font-black text-sm text-amber-300 select-all">
+                  {resolvedDeviceId}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(resolvedDeviceId);
+                    setCopiedDevice(true);
+                    setTimeout(() => setCopiedDevice(false), 1800);
+                  } catch {
+                    showToast(resolvedDeviceId, "info");
+                  }
+                }}
+                className="px-3 py-1.5 rounded-xl bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1 cursor-pointer shrink-0"
+              >
+                {copiedDevice ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedDevice ? "Copied" : "Copy"}</span>
+              </button>
+            </div>
+
+            {/* Renew / Update Activation Key Form */}
+            <form onSubmit={handleRenewWithKey} className="pt-1 space-y-2">
+              <label
+                htmlFor="settings-renew-key"
+                className="block text-[10px] font-bold uppercase tracking-wider text-slate-300"
+              >
+                {lang === "te"
+                  ? "కొత్త యాక్టివేషన్ కీతో రీన్యూ చేయండి"
+                  : "Activate / Renew With Key"}
+              </label>
+              <div className="flex gap-2">
+                <input
+                  id="settings-renew-key"
+                  type="text"
+                  value={renewKeyInput}
+                  onChange={(e) => {
+                    setRenewKeyInput(e.target.value.toUpperCase());
+                    setRenewKeyErr("");
+                  }}
+                  placeholder="SLG-12M-YYYYMMDD-XXXXXXXX"
+                  className="flex-1 min-w-0 px-3 py-2 rounded-xl bg-black/40 border border-white/20 text-white placeholder-slate-400 font-mono text-xs uppercase focus:outline-none focus:border-amber-400"
+                />
+                <button
+                  type="submit"
+                  className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-1 cursor-pointer shrink-0"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>{lang === "te" ? "యాక్టివేట్" : "Apply"}</span>
+                </button>
+              </div>
+              {renewKeyErr && (
+                <p className="text-[11px] font-bold text-rose-300">{renewKeyErr}</p>
+              )}
+            </form>
           </div>
 
+          {/* 2. OWNER ADMIN LICENSE CONSOLE (Strictly visible ONLY to verified reswanth6789@gmail.com) */}
+          {isOwnerAdmin && (
+            <div className="rounded-3xl p-5 bg-white dark:bg-[#131B2E] border-2 border-emerald-500/60 shadow-md space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                    <ShieldCheck className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                      Owner SaaS Control
+                    </span>
+                    <h4 className="text-base font-black text-slate-900 dark:text-slate-100">
+                      Issue Lender Subscription / Free Pass
+                    </h4>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void loadAdminLicenses()}
+                  disabled={loadingAdminLicenses}
+                  className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 cursor-pointer"
+                  title="Refresh Licenses"
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 ${loadingAdminLicenses ? "animate-spin" : ""}`}
+                  />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                    Lender Device ID *
+                  </label>
+                  <input
+                    type="text"
+                    value={adminDeviceId}
+                    onChange={(e) => setAdminDeviceId(e.target.value.toUpperCase())}
+                    placeholder="LBP-XXXX-XXXX"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-mono text-xs uppercase"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                    Plan Duration
+                  </label>
+                  <select
+                    value={adminPlan}
+                    onChange={(e) => setAdminPlan(e.target.value as PaidOrFreePlanId)}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-xs font-bold"
+                  >
+                    <option value="half_yearly">6 Months Plan (₹1,599)</option>
+                    <option value="yearly">12 Months Plan (₹2,599)</option>
+                    <option value="custom_app">Custom App (₹4,999+)</option>
+                    <option value="lifetime_free">Dad / Family Free Pass (₹0 Forever)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                    Lender Business Name
+                  </label>
+                  <input
+                    type="text"
+                    value={adminBizName}
+                    onChange={(e) => setAdminBizName(e.target.value)}
+                    placeholder="e.g. Sri Venkateswara Finance"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                    Lender Google Email (Optional Cloud Sync)
+                  </label>
+                  <input
+                    type="email"
+                    value={adminLenderEmail}
+                    onChange={(e) => setAdminLenderEmail(e.target.value)}
+                    placeholder="lender@gmail.com"
+                    className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-xs"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button
+                  type="button"
+                  disabled={adminSavingLicense}
+                  onClick={() => void handleAdminIssueLicense()}
+                  className="flex-1 min-h-[42px] py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
+                >
+                  <KeyRound className="w-4 h-4" />
+                  <span>
+                    {adminSavingLicense
+                      ? "Saving Cloud License..."
+                      : "Generate Key & Save to Cloud"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  disabled={adminSavingLicense}
+                  onClick={() =>
+                    void handleAdminIssueLicense(
+                      "lifetime_free",
+                      adminDeviceId || resolvedDeviceId,
+                      adminBizName || "Sri Lakshmi Ganapati (Dad)"
+                    )
+                  }
+                  className="min-h-[42px] py-2.5 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-black text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span>Issue Dad / Family Free Pass</span>
+                </button>
+              </div>
+
+              {adminGeneratedKey && (
+                <div className="p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-300 dark:border-emerald-800 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
+                      Generated Key for {adminGeneratedKey.deviceId} (Exp:{" "}
+                      {adminGeneratedKey.expiresAt})
+                    </span>
+                  </div>
+                  <div className="font-mono font-black text-xs sm:text-sm text-slate-900 dark:text-white bg-white dark:bg-slate-900 px-3 py-2 rounded-xl border border-emerald-200 dark:border-emerald-800 select-all">
+                    {adminGeneratedKey.key}
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await navigator.clipboard.writeText(adminGeneratedKey.key);
+                        setCopiedGeneratedKey(true);
+                        setTimeout(() => setCopiedGeneratedKey(false), 1800);
+                      }}
+                      className="flex-1 py-2 rounded-xl bg-slate-900 text-white font-bold text-xs flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      {copiedGeneratedKey ? (
+                        <Check className="w-3.5 h-3.5" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                      <span>{copiedGeneratedKey ? "Key Copied ✓" : "Copy Key"}</span>
+                    </button>
+                    <a
+                      href={`https://wa.me/?text=${encodeURIComponent(
+                        `LineBook Pro Activated!\nDevice ID: ${adminGeneratedKey.deviceId}\nValid Until: ${adminGeneratedKey.expiresAt}\n\nActivation Key:\n${adminGeneratedKey.key}`
+                      )}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex-1 py-2 rounded-xl bg-emerald-600 text-white font-bold text-xs flex items-center justify-center gap-1"
+                    >
+                      <MessageCircle className="w-3.5 h-3.5" />
+                      <span>Send via WhatsApp</span>
+                    </a>
+                  </div>
+                </div>
+              )}
+
+              {/* Issued Cloud Licenses List */}
+              <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <h5 className="text-xs font-black uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                  Cloud Licenses ({adminLicenses.length})
+                </h5>
+                {adminLicenses.length === 0 ? (
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    No cloud licenses issued yet.
+                  </p>
+                ) : (
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                    {adminLicenses.map((lic) => (
+                      <div
+                        key={lic.licenseId}
+                        className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-black text-xs text-slate-900 dark:text-white">
+                              {lic.deviceId}
+                            </span>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase ${
+                                lic.status === "active"
+                                  ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                                  : "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300"
+                              }`}
+                            >
+                              {lic.status}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-600 dark:text-slate-300 truncate">
+                            {lic.businessName} ·{" "}
+                            {SUBSCRIPTION_PLANS[lic.plan]?.nameEn || lic.plan} · Exp:{" "}
+                            {lic.expiresAt}
+                          </div>
+                          {lic.lenderEmail && (
+                            <div className="text-[10px] text-slate-500 truncate">
+                              {lic.lenderEmail}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              await navigator.clipboard.writeText(lic.activationKey);
+                              showToast("Key copied ✓", "info");
+                            }}
+                            className="p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer"
+                            title="Copy Activation Key"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                          </button>
+                          {lic.status === "active" && (
+                            <button
+                              type="button"
+                              onClick={() => void handleAdminRevoke(lic.licenseId)}
+                              className="p-2 rounded-xl bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-900 text-rose-600 dark:text-rose-300 cursor-pointer"
+                              title="Revoke License"
+                            >
+                              <Ban className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 3. COMMERCIAL SAAS PLANS (6 Months ₹1,599 · 12 Months ₹2,599 · Custom App ₹4,999+) */}
           <div className="space-y-3.5">
-            {/* PLAN 1: 6 MONTHS PLAN */}
+            <div className="flex items-center justify-between px-1">
+              <h3 className="text-sm font-black text-slate-900 dark:text-slate-100">
+                {lang === "te" ? "లైన్‌బుక్ ప్రో ప్లాన్లు" : "LineBook Pro Commercial Plans"}
+              </h3>
+              <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400">
+                {OWNER_WHATSAPP_DISPLAY}
+              </span>
+            </div>
+
+            {/* PLAN 1: 6 MONTHS PLAN (₹1,599) */}
             <div className="rounded-3xl p-5 bg-white dark:bg-[#131B2E] border-2 border-slate-300/80 dark:border-slate-700 space-y-3 shadow-sm">
               <div className="flex items-center justify-between">
                 <div>
                   <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                    Half-Yearly License
+                    {lang === "te" ? "6 నెలల లైసెన్స్" : "Half-Yearly License"}
                   </span>
                   <h4 className="text-lg font-black text-slate-900 dark:text-slate-100">
-                    6 Months Plan
+                    {lang === "te"
+                      ? SUBSCRIPTION_PLANS.half_yearly.nameTe
+                      : SUBSCRIPTION_PLANS.half_yearly.nameEn}
                   </h4>
                 </div>
                 <div className="text-right">
-                  <div className="text-2xl font-black text-slate-900 dark:text-slate-100">₹1,199</div>
-                  <div className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">/ 6 Months</div>
+                  <div className="text-2xl font-black text-slate-900 dark:text-slate-100">
+                    {SUBSCRIPTION_PLANS.half_yearly.priceLabel}
+                  </div>
+                  <div className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
+                    {lang === "te"
+                      ? SUBSCRIPTION_PLANS.half_yearly.periodLabelTe
+                      : SUBSCRIPTION_PLANS.half_yearly.periodLabelEn}
+                  </div>
                 </div>
               </div>
 
               <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>Unlimited Borrowers & Villages on Line</span>
+                  <span>
+                    {lang === "te"
+                      ? "అపరిమిత గ్రామాలు & ఖాతాదారులు (రోజు/వారం/నెల)"
+                      : "Unlimited Borrowers & Villages (Daily / Weekly / Monthly)"}
+                  </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>1-Tap WhatsApp Payment Receipts</span>
+                  <span>
+                    {lang === "te"
+                      ? "1-ట్యాప్ వాట్సాప్ రశీదులు & 2 రోజుల రిమైండర్లు"
+                      : "1-Tap WhatsApp Payment Receipts & 2-Day Reminders"}
+                  </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>2-Day Advance Village Reminders</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>100% Private Offline Local Storage</span>
+                  <span>
+                    {lang === "te"
+                      ? "రోజువారీ క్యాష్‌బుక్, పాస్‌బుక్, PDF & CSV రిపోర్టులు"
+                      : "Daily Cashbook, Passbook, PDF & CSV Reports"}
+                  </span>
                 </div>
               </div>
 
-              <button
-                onClick={() =>
-                  window.open(
-                    `https://wa.me/919876543210?text=${encodeURIComponent(
-                      "Hi! I want to activate LineBook Pro 6 Months Plan for ₹1,199."
-                    )}`,
-                    "_blank"
-                  )
-                }
-                className="w-full py-3 rounded-2xl bg-[#1E3A8A] text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer hover:bg-blue-900 mt-2 shadow-sm"
+              <a
+                href={buildSubscriptionWhatsAppUrl({
+                  plan: "half_yearly",
+                  deviceId: resolvedDeviceId,
+                  businessName: profile.businessName,
+                  googleEmail: googleUser?.email,
+                  lang,
+                })}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full py-3 rounded-2xl bg-[#1E3A8A] text-white font-bold text-xs flex items-center justify-center gap-1.5 hover:bg-blue-900 mt-2 shadow-sm"
               >
-                <span>Select 6 Months Plan</span>
+                <span>
+                  {lang === "te"
+                    ? "6 నెలల ప్లాన్ ఎంచుకోండి (₹1,599)"
+                    : "Select 6 Months Plan (₹1,599)"}
+                </span>
                 <ExternalLink className="w-3.5 h-3.5" />
-              </button>
+              </a>
             </div>
 
-            {/* PLAN 2: 12 MONTHS PLAN (BEST VALUE) */}
-            <div className="rounded-3xl p-5 border-2 border-amber-400 bg-gradient-to-br from-amber-500/10 via-orange-500/5 to-transparent space-y-3 relative shadow-md">
+            {/* PLAN 2: 12 MONTHS PLAN (₹2,599 · BEST VALUE) */}
+            <div className="rounded-3xl p-5 border-2 border-amber-400 bg-white dark:bg-[#131B2E] space-y-3 relative shadow-md">
               <span className="absolute -top-3 right-6 px-3 py-1 rounded-full bg-amber-500 text-slate-950 font-black text-[10px] tracking-wider uppercase shadow-xs">
-                BEST VALUE ★
+                {lang === "te"
+                  ? SUBSCRIPTION_PLANS.yearly.badgeTe
+                  : SUBSCRIPTION_PLANS.yearly.badgeEn}
               </span>
 
               <div className="flex items-center justify-between">
                 <div>
                   <span className="text-[10px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-400">
-                    Annual Full License
+                    {lang === "te" ? "పూర్తి వార్షిక లైసెన్స్" : "Annual Full License"}
                   </span>
                   <h4 className="text-lg font-black text-slate-900 dark:text-slate-100">
-                    12 Months Plan
+                    {lang === "te"
+                      ? SUBSCRIPTION_PLANS.yearly.nameTe
+                      : SUBSCRIPTION_PLANS.yearly.nameEn}
                   </h4>
                 </div>
                 <div className="text-right">
-                  <div className="text-2xl font-black text-amber-600 dark:text-amber-400">₹1,999</div>
+                  <div className="text-2xl font-black text-amber-600 dark:text-amber-400">
+                    {SUBSCRIPTION_PLANS.yearly.priceLabel}
+                  </div>
                   <div className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
-                    (₹166/month only)
+                    {lang === "te"
+                      ? SUBSCRIPTION_PLANS.yearly.periodLabelTe
+                      : SUBSCRIPTION_PLANS.yearly.periodLabelEn}
                   </div>
                 </div>
               </div>
@@ -867,80 +1564,122 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>Everything in 6 Months Plan</span>
+                  <span>
+                    {lang === "te"
+                      ? "6 నెలల అన్ని ఫీచర్లు + Google క్లౌడ్ బ్యాకప్"
+                      : "Everything in 6 Months Plan + Google Cloud Backup"}
+                  </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>Priority WhatsApp VIP Support</span>
+                  <span>
+                    {lang === "te"
+                      ? `ప్రియారిటీ వాట్సాప్ సపోర్ట్ (${OWNER_WHATSAPP_DISPLAY})`
+                      : `Priority WhatsApp VIP Support (${OWNER_WHATSAPP_DISPLAY})`}
+                  </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>Save ₹400 compared to half-yearly</span>
+                  <span>
+                    {lang === "te"
+                      ? "అర్ధ-సంవత్సర ప్లాన్‌తో పోలిస్తే ₹599 ఆదా"
+                      : "Save ₹599 compared to 2 half-yearly renewals"}
+                  </span>
                 </div>
               </div>
 
-              <button
-                onClick={() =>
-                  window.open(
-                    `https://wa.me/919876543210?text=${encodeURIComponent(
-                      "Hi! I want to activate LineBook Pro 12 Months Plan for ₹1,999."
-                    )}`,
-                    "_blank"
-                  )
-                }
-                className="w-full py-3 rounded-2xl bg-amber-600 hover:bg-amber-700 text-white font-black text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-md mt-2"
+              <a
+                href={buildSubscriptionWhatsAppUrl({
+                  plan: "yearly",
+                  deviceId: resolvedDeviceId,
+                  businessName: profile.businessName,
+                  googleEmail: googleUser?.email,
+                  lang,
+                })}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full py-3 rounded-2xl bg-amber-600 hover:bg-amber-700 text-white font-black text-xs flex items-center justify-center gap-1.5 shadow-md mt-2"
               >
-                <span>Select 12 Months Plan (₹1,999)</span>
+                <span>
+                  {lang === "te"
+                    ? "12 నెలల ప్లాన్ ఎంచుకోండి (₹2,599)"
+                    : "Select 12 Months Plan (₹2,599)"}
+                </span>
                 <ExternalLink className="w-3.5 h-3.5" />
-              </button>
+              </a>
             </div>
 
-            {/* PLAN 3: CUSTOM APP PLAN */}
+            {/* PLAN 3: CUSTOM APP PLAN (₹4,999+) */}
             <div className="rounded-3xl p-5 bg-white dark:bg-[#131B2E] border-2 border-purple-300 dark:border-purple-800 space-y-3 shadow-sm">
               <div className="flex items-center justify-between">
                 <div>
                   <span className="text-[10px] font-black uppercase tracking-wider text-purple-700 dark:text-purple-400">
-                    Bespoke Engineered
+                    {lang === "te" ? "ప్రత్యేక కస్టమ్ యాప్" : "Bespoke Engineered"}
                   </span>
                   <h4 className="text-lg font-black text-slate-900 dark:text-slate-100">
-                    Custom App Plan
+                    {lang === "te"
+                      ? SUBSCRIPTION_PLANS.custom_app.nameTe
+                      : SUBSCRIPTION_PLANS.custom_app.nameEn}
                   </h4>
                 </div>
                 <div className="text-right">
-                  <div className="text-2xl font-black text-purple-700 dark:text-purple-400">₹4,999+</div>
-                  <div className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">One-Time Setup</div>
+                  <div className="text-2xl font-black text-purple-700 dark:text-purple-400">
+                    {SUBSCRIPTION_PLANS.custom_app.priceLabel}
+                  </div>
+                  <div className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
+                    {lang === "te"
+                      ? SUBSCRIPTION_PLANS.custom_app.periodLabelTe
+                      : "One-Time Setup + 1 Yr"}
+                  </div>
                 </div>
               </div>
 
               <div className="space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-purple-600 shrink-0" />
-                  <span>Custom Business Name & Unique App Icon</span>
+                  <span>
+                    {lang === "te"
+                      ? "మీ ఫైనాన్స్ పేరు, డొమైన్ & ప్రత్యేక యాప్ లోగో"
+                      : "Custom Business Name, Domain & Unique App Icon"}
+                  </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-purple-600 shrink-0" />
-                  <span>Add Custom Fields & Rules by Lender Request</span>
+                  <span>
+                    {lang === "te"
+                      ? "మీ వ్యాపారానికి తగిన ప్రత్యేక ఫీల్డ్స్ & నియమాలు"
+                      : "Add Custom Fields & Loan Rules by Lender Request"}
+                  </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-purple-600 shrink-0" />
-                  <span>Direct Developer Consultation & Updates</span>
+                  <span>
+                    {lang === "te"
+                      ? `డెవలపర్‌తో డైరెక్ట్ వాట్సాప్ సపోర్ట్ (${OWNER_WHATSAPP_DISPLAY})`
+                      : `Direct Developer WhatsApp Support (${OWNER_WHATSAPP_DISPLAY})`}
+                  </span>
                 </div>
               </div>
 
-              <button
-                onClick={() =>
-                  window.open(
-                    `https://wa.me/919876543210?text=${encodeURIComponent(
-                      "Hi! I want to discuss a Custom App for my microfinance business."
-                    )}`,
-                    "_blank"
-                  )
-                }
-                className="w-full py-3 rounded-2xl bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer mt-2 shadow-sm"
+              <a
+                href={buildSubscriptionWhatsAppUrl({
+                  plan: "custom_app",
+                  deviceId: resolvedDeviceId,
+                  businessName: profile.businessName,
+                  googleEmail: googleUser?.email,
+                  lang,
+                })}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full py-3 rounded-2xl bg-purple-700 hover:bg-purple-800 text-white font-bold text-xs flex items-center justify-center gap-1.5 mt-2 shadow-sm"
               >
-                <span>Request Custom App</span>
+                <span>
+                  {lang === "te"
+                    ? "వాట్సాప్‌లో కస్టమ్ యాప్ కోరండి (₹4,999+)"
+                    : "Request Custom App on WhatsApp (₹4,999+)"}
+                </span>
                 <ExternalLink className="w-3.5 h-3.5" />
-              </button>
+              </a>
             </div>
           </div>
         </div>
@@ -949,202 +1688,287 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
       {/* BACKUP & RESTORE SECTION */}
       {activeSection === "backup" && (
         <div className="space-y-4">
-          {/* 1. Firebase Cloud Auto-Backup Card */}
+          {/* 1. Google Sign-In Firebase Cloud Vault Card */}
           <div className="rounded-3xl p-5 bg-gradient-to-br from-blue-900/10 via-sky-500/5 to-transparent dark:from-blue-950/40 dark:via-sky-950/20 bg-white dark:bg-[#131B2E] border-2 border-blue-500/40 dark:border-blue-500/30 space-y-4 shadow-sm relative overflow-hidden">
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-center gap-3 min-w-0">
                 <div className="w-11 h-11 rounded-2xl bg-blue-600 text-white flex items-center justify-center shadow-md shadow-blue-500/20 shrink-0">
                   <Cloud className="w-6 h-6" />
                 </div>
-                <div>
-                  <h3 className="font-black text-slate-900 dark:text-slate-100 text-base flex items-center gap-2">
-                    <span>{lang === "te" ? "ఫైర్‌బేస్ క్లౌడ్ ఆటో-బ్యాకప్" : "Firebase Cloud Auto-Backup"}</span>
+                <div className="min-w-0">
+                  <h3 className="font-black text-slate-900 dark:text-slate-100 text-sm sm:text-base leading-snug">
+                    {lang === "te" ? "Google క్లౌడ్ వాల్ట్ సింక్" : "Google Cloud Vault"}
                   </h3>
-                  <p className="text-[11px] text-blue-700 dark:text-blue-300 font-semibold">
-                    {lang === "te" ? "సురక్షిత క్లౌడ్ వాల్ట్" : "Encrypted Cloud Vault (Zero Data Loss)"}
+                  <p className="text-[11px] text-blue-700 dark:text-blue-300 font-semibold leading-snug">
+                    {lang === "te" ? "ఫోన్ మారినా డేటా సురక్షితం" : "Cross-Phone Cloud Sync"}
                   </p>
                 </div>
               </div>
-              <span className="px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 text-[10px] font-black flex items-center gap-1.5 border border-emerald-500/30 shrink-0">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping"></span>
-                ACTIVE
-              </span>
+              {googleUser ? (
+                <span className="px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 text-[10px] font-black flex items-center gap-1.5 border border-emerald-500/30 shrink-0">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
+                  SYNC ON
+                </span>
+              ) : (
+                <span className="px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] font-black border border-slate-200 dark:border-slate-700 shrink-0">
+                  LOCAL ONLY
+                </span>
+              )}
             </div>
 
-            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-              {lang === "te"
-                ? "మీ గ్రామాల ఖాతా లెడ్జర్ సురక్షితంగా క్లౌడ్‌లో సేవ్ అవుతుంది. ఫోన్ పగిలిపోయినా, పోయినా లేదా కొత్త ఫోన్ మార్చినా మీ డేటా 100% రక్షించబడి ఉంటుంది."
-                : "Your village lending ledger is securely backed up to Firebase Cloud Storage. If your mobile phone is ever damaged or replaced, you can restore all records in 1 tap."}
-            </p>
-
-            {/* Cloud Vault Info Row */}
-            <div className="p-3.5 rounded-2xl bg-white/80 dark:bg-slate-900/70 border border-slate-200/90 dark:border-slate-800 space-y-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-500 dark:text-slate-400 font-medium flex items-center gap-1.5">
-                  <Database className="w-3.5 h-3.5 text-blue-500" />
-                  <span>Device Cloud Vault ID</span>
-                </span>
-                <span className="font-mono text-[11px] font-bold text-slate-700 dark:text-slate-200 truncate max-w-[180px]">
-                  {cloudId}
-                </span>
-              </div>
-              <div className="flex items-center justify-between text-xs pt-1 border-t border-slate-100 dark:border-slate-800">
-                <span className="text-slate-500 dark:text-slate-400 font-medium flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>Last Cloud Backup</span>
-                </span>
-                <span className="font-bold text-slate-800 dark:text-slate-200 text-[11px]">
-                  {lastCloudTime
-                    ? new Date(lastCloudTime).toLocaleString("en-IN", {
-                        day: "2-digit",
-                        month: "short",
-                        year: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })
-                    : lang === "te"
-                    ? "ఇంకా చేయలేదు"
-                    : "Not yet synced"}
-                </span>
-              </div>
-            </div>
-
-            {/* Auto Cloud Sync Toggle */}
-            <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-800">
-              <div className="pr-3">
-                <div className="text-xs font-bold text-slate-900 dark:text-slate-100">
-                  {lang === "te" ? "కలెక్షన్ల తర్వాత ఆటో-సింక్" : "Auto-Sync After Collections"}
-                </div>
-                <div className="text-[10px] text-slate-500 dark:text-slate-400">
+            {!googleUser ? (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                   {lang === "te"
-                    ? "వసూలు లేదా కొత్త రుణం నమోదు చేసినప్పుడు ఆటోమేటిక్ గా క్లౌడ్ లో సేవ్ అవుతుంది"
-                    : "Automatically snapshots ledger whenever collections or loans are saved"}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={handleToggleAutoCloud}
-                className={`w-12 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                  autoCloudEnabled ? "bg-emerald-600" : "bg-slate-300 dark:bg-slate-700"
-                }`}
-              >
-                <div
-                  className={`w-4 h-4 rounded-full bg-white transition-transform absolute top-1 ${
-                    autoCloudEnabled ? "left-7" : "left-1"
-                  }`}
-                />
-              </button>
-            </div>
-
-            {/* Sync to Cloud Now Button */}
-            <button
-              onClick={handleSyncCloud}
-              disabled={cloudSyncing}
-              className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-blue-700 to-indigo-700 hover:from-blue-800 hover:to-indigo-800 text-white font-black text-xs flex items-center justify-center gap-2 shadow-md cursor-pointer transition-all disabled:opacity-50"
-            >
-              <RefreshCw className={`w-4 h-4 ${cloudSyncing ? "animate-spin" : ""}`} />
-              <span>
-                {cloudSyncing
-                  ? lang === "te"
-                    ? "క్లౌడ్ వాల్ట్ కి సింక్ అవుతోంది..."
-                    : "Uploading to Firebase Cloud..."
-                  : lang === "te"
-                  ? "ఇప్పుడే క్లౌడ్‌కి సింక్ చేయండి (Sync Now)"
-                  : "Sync Ledger to Cloud Now"}
-              </span>
-            </button>
-          </div>
-
-          {/* 2. Cloud Snapshots List */}
-          <div className="rounded-3xl p-5 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800 space-y-3 shadow-sm">
-            <div className="flex items-center justify-between">
-              <h4 className="font-bold text-sm text-slate-800 dark:text-slate-200 flex items-center gap-2">
-                <Database className="w-4 h-4 text-indigo-600" />
-                <span>
-                  {lang === "te" ? "క్లౌడ్ స్నాప్‌షాట్ల చరిత్ర" : "Cloud Snapshots"} ({cloudBackups.length})
-                </span>
-              </h4>
-              <button
-                onClick={fetchCloudBackups}
-                disabled={loadingCloudBackups}
-                className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1 cursor-pointer hover:underline disabled:opacity-50"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${loadingCloudBackups ? "animate-spin" : ""}`} />
-                <span>{lang === "te" ? "రిఫ్రెష్" : "Refresh"}</span>
-              </button>
-            </div>
-
-            {loadingCloudBackups ? (
-              <div className="py-6 text-center text-xs text-slate-500 flex items-center justify-center gap-2">
-                <RefreshCw className="w-4 h-4 animate-spin text-blue-600" />
-                <span>{lang === "te" ? "క్లౌడ్ రికార్డులు లోడ్ అవుతున్నాయి..." : "Checking Cloud Vault..."}</span>
-              </div>
-            ) : cloudBackups.length === 0 ? (
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/40 border border-dashed border-slate-200 dark:border-slate-800 text-center">
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  {lang === "te"
-                    ? "ఇంకా క్లౌడ్ స్నాప్‌షాట్లు లేవు. పైన ఉన్న 'ఇప్పుడే క్లౌడ్‌కి సింక్ చేయండి' బటన్ నొక్కండి."
-                    : "No cloud snapshots created yet. Tap 'Sync Ledger to Cloud Now' above."}
+                    ? "మీ లెడ్జర్ ఆఫ్‌లైన్‌లో ఎప్పుడూ పనిచేస్తుంది. కొత్త ఫోన్ మారినప్పుడు మీ పూర్తి ఖాతాలను తిరిగి పొందడానికి మీ Google ఖాతాతో సైన్ ఇన్ చేయండి."
+                    : "Your lending ledger always runs 100% offline first. Sign in with your Google account to securely back up snapshots across any phone."}
                 </p>
+
+                <button
+                  type="button"
+                  onClick={handleGoogleSignIn}
+                  disabled={googleSigningIn}
+                  className="w-full min-h-[48px] py-3 px-4 rounded-2xl bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-black text-xs flex items-center justify-center gap-2.5 shadow-sm cursor-pointer transition-all disabled:opacity-60"
+                >
+                  <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      fill="#EA4335"
+                      d="M12 5.04c1.94 0 3.51.68 4.75 1.81l3.55-3.55C18.17 1.34 15.32 0 12 0 7.31 0 3.25 2.69 1.25 6.62l4.14 3.21C6.39 6.95 8.98 5.04 12 5.04z"
+                    />
+                    <path
+                      fill="#4285F4"
+                      d="M23.49 12.27c0-.79-.07-1.55-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.74-2.41 3.58l3.88 3.01c2.27-2.09 3.55-5.17 3.55-8.83z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M5.39 14.17c-.24-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29L1.25 6.38C.45 7.98 0 9.93 0 11.88s.45 3.9 1.25 5.5l4.14-3.21z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 24c3.24 0 5.95-1.08 7.93-2.9l-3.88-3.01c-1.08.72-2.45 1.15-4.05 1.15-3.02 0-5.61-1.91-6.61-4.59l-4.14 3.21C3.25 21.31 7.31 24 12 24z"
+                    />
+                  </svg>
+                  <span>
+                    {googleSigningIn
+                      ? lang === "te"
+                        ? "Google ఖాతాకు కనెక్ట్ అవుతోంది..."
+                        : "Connecting Google Account..."
+                      : lang === "te"
+                      ? "క్లౌడ్ సింక్ కోసం Google తో సైన్ ఇన్ చేయండి"
+                      : "Sign in with Google to Sync Across Phones"}
+                  </span>
+                </button>
               </div>
             ) : (
-              <div className="space-y-2.5 max-h-72 overflow-y-auto pr-0.5">
-                {cloudBackups.map((bk) => (
-                  <div
-                    key={bk.backupId}
-                    className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800/80 flex items-center justify-between gap-3 text-xs"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-slate-900 dark:text-slate-100 text-xs">
-                          {new Date(bk.exportedAt).toLocaleString("en-IN", {
-                            day: "2-digit",
-                            month: "short",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })}
-                        </span>
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${
-                            bk.auto
-                              ? "bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300"
-                              : "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
-                          }`}
-                        >
-                          {bk.auto ? "AUTO" : "MANUAL"}
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-2">
-                        <span>{bk.villagesCount} Villages</span>
-                        <span>•</span>
-                        <span>{bk.borrowersCount} Borrowers</span>
-                        <span>•</span>
-                        <span className="font-bold text-amber-700 dark:text-amber-400">
-                          ₹{bk.totalLent.toLocaleString("en-IN")}
-                        </span>
+              <div className="space-y-3.5">
+                {/* Connected Google Account Bar */}
+                <div className="p-3.5 rounded-2xl bg-white/90 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      {googleUser.photoURL ? (
+                        <img
+                          src={googleUser.photoURL}
+                          alt={googleUser.displayName}
+                          className="w-9 h-9 rounded-full border border-slate-200 dark:border-slate-700 shrink-0"
+                        />
+                      ) : (
+                        <div className="w-9 h-9 rounded-full bg-blue-600 text-white font-black text-sm flex items-center justify-center shrink-0">
+                          {(googleUser.displayName || "G").charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <div className="text-xs font-black text-slate-900 dark:text-slate-100 flex items-center gap-1 truncate">
+                          <span className="truncate">{googleUser.displayName}</span>
+                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        </div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                          {googleUser.email}
+                        </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        onClick={() => setConfirmRestoreCloud(bk)}
-                        className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs cursor-pointer shadow-xs transition-all"
-                      >
-                        {lang === "te" ? "రీస్టోర్" : "Restore"}
-                      </button>
-                      <button
-                        onClick={() => handleDeleteCloudSnapshot(bk.backupId)}
-                        className="p-1.5 rounded-xl text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer transition-all"
-                        title="Delete this snapshot"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                    <button
+                      type="button"
+                      onClick={handleGoogleSignOut}
+                      className="min-h-[36px] px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-[11px] font-bold flex items-center gap-1 cursor-pointer shrink-0"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>{lang === "te" ? "లాగ్‌అవుట్" : "Sign Out"}</span>
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between text-xs pt-2 border-t border-slate-100 dark:border-slate-800">
+                    <span className="text-slate-500 dark:text-slate-400 font-medium flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-emerald-500" />
+                      <span>{lang === "te" ? "చివరి క్లౌడ్ బ్యాకప్" : "Last Cloud Backup"}</span>
+                    </span>
+                    <span className="font-bold text-slate-800 dark:text-slate-200 text-[11px]">
+                      {lastCloudTime
+                        ? new Date(lastCloudTime).toLocaleString("en-IN", {
+                            day: "2-digit",
+                            month: "short",
+                            year: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })
+                        : lang === "te"
+                        ? "ఇంకా చేయలేదు"
+                        : "Not yet synced"}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Auto Cloud Sync Toggle */}
+                <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-800">
+                  <div className="pr-3">
+                    <div className="text-xs font-bold text-slate-900 dark:text-slate-100">
+                      {lang === "te" ? "కలెక్షన్ల తర్వాత ఆటో-సింక్" : "Auto-Sync After Collections"}
+                    </div>
+                    <div className="text-[10px] text-slate-500 dark:text-slate-400">
+                      {lang === "te"
+                        ? "వసూలు లేదా కొత్త రుణం నమోదు చేసినప్పుడు ఆటోమేటిక్ గా క్లౌడ్ లో సేవ్ అవుతుంది"
+                        : "Automatically snapshots ledger whenever collections or loans are saved"}
                     </div>
                   </div>
-                ))}
+                  <button
+                    type="button"
+                    aria-label="Toggle automatic cloud backup"
+                    onClick={handleToggleAutoCloud}
+                    className={`w-12 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                      autoCloudEnabled ? "bg-emerald-600" : "bg-slate-300 dark:bg-slate-700"
+                    }`}
+                  >
+                    <div
+                      className={`w-4 h-4 rounded-full bg-white transition-transform absolute top-1 ${
+                        autoCloudEnabled ? "left-7" : "left-1"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* Sync to Cloud Now Button */}
+                <button
+                  type="button"
+                  onClick={handleSyncCloud}
+                  disabled={cloudSyncing}
+                  className="w-full min-h-[46px] py-3.5 px-4 rounded-2xl bg-gradient-to-r from-blue-700 to-indigo-700 hover:from-blue-800 hover:to-indigo-800 text-white font-black text-xs flex items-center justify-center gap-2 shadow-md cursor-pointer transition-all disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-4 h-4 ${cloudSyncing ? "animate-spin" : ""}`} />
+                  <span>
+                    {cloudSyncing
+                      ? lang === "te"
+                        ? "క్లౌడ్ వాల్ట్ కి సింక్ అవుతోంది..."
+                        : "Uploading to Firebase Cloud..."
+                      : lang === "te"
+                      ? "ఇప్పుడే క్లౌడ్‌కి సింక్ చేయండి (Sync Now)"
+                      : "Sync Ledger to Cloud Now"}
+                  </span>
+                </button>
               </div>
             )}
           </div>
+
+          {/* 2. Cloud Snapshots List (Shown when signed in) */}
+          {googleUser && (
+            <div className="rounded-3xl p-5 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800 space-y-3 shadow-sm">
+              <div className="flex items-center justify-between">
+                <h4 className="font-bold text-sm text-slate-800 dark:text-slate-200 flex items-center gap-2">
+                  <Database className="w-4 h-4 text-indigo-600" />
+                  <span>
+                    {lang === "te" ? "క్లౌడ్ స్నాప్‌షాట్ల చరిత్ర" : "Cloud Snapshots"} ({cloudBackups.length})
+                  </span>
+                </h4>
+                <button
+                  type="button"
+                  onClick={fetchCloudBackups}
+                  disabled={loadingCloudBackups}
+                  className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1 cursor-pointer hover:underline disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingCloudBackups ? "animate-spin" : ""}`} />
+                  <span>{lang === "te" ? "రిఫ్రెష్" : "Refresh"}</span>
+                </button>
+              </div>
+
+              {cloudError && (
+                <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-xs text-rose-700 dark:text-rose-300 font-semibold">
+                  {cloudError}
+                </div>
+              )}
+
+              {loadingCloudBackups ? (
+                <div className="py-6 text-center text-xs text-slate-500 flex items-center justify-center gap-2">
+                  <RefreshCw className="w-4 h-4 animate-spin text-blue-600" />
+                  <span>{lang === "te" ? "క్లౌడ్ రికార్డులు లోడ్ అవుతున్నాయి..." : "Checking Cloud Vault..."}</span>
+                </div>
+              ) : cloudBackups.length === 0 ? (
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-900/40 border border-dashed border-slate-200 dark:border-slate-800 text-center">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {lang === "te"
+                      ? "ఇంకా క్లౌడ్ స్నాప్‌షాట్లు లేవు. పైన ఉన్న 'ఇప్పుడే క్లౌడ్‌కి సింక్ చేయండి' బటన్ నొక్కండి."
+                      : "No cloud snapshots created yet. Tap 'Sync Ledger to Cloud Now' above."}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2.5 max-h-72 overflow-y-auto pr-0.5">
+                  {cloudBackups.map((bk) => (
+                    <div
+                      key={bk.backupId}
+                      className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800/80 flex items-center justify-between gap-3 text-xs"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-slate-900 dark:text-slate-100 text-xs">
+                            {new Date(bk.exportedAt).toLocaleString("en-IN", {
+                              day: "2-digit",
+                              month: "short",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </span>
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-black uppercase ${
+                              bk.auto
+                                ? "bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300"
+                                : "bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300"
+                            }`}
+                          >
+                            {bk.auto ? "AUTO" : "MANUAL"}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 flex items-center gap-2">
+                          <span>{bk.villagesCount} Villages</span>
+                          <span>•</span>
+                          <span>{bk.borrowersCount} Borrowers</span>
+                          <span>•</span>
+                          <span className="font-bold text-amber-700 dark:text-amber-400">
+                            ₹{(bk.totalLent || 0).toLocaleString("en-IN")}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setConfirmRestoreCloud(bk)}
+                          className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs cursor-pointer shadow-xs transition-all"
+                        >
+                          {lang === "te" ? "రీస్టోర్" : "Restore"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteCloudSnapshot(bk.backupId)}
+                          className="p-1.5 rounded-xl text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 cursor-pointer transition-all"
+                          title="Delete this snapshot"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* 3. Local Offline & WhatsApp Backup */}
           <div className="rounded-3xl p-5 bg-white dark:bg-[#131B2E] border border-emerald-500/40 space-y-3 shadow-sm">
@@ -1246,20 +2070,22 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 : `Restore snapshot from ${new Date(confirmRestoreCloud.exportedAt).toLocaleString("en-IN")}? It contains ${confirmRestoreCloud.villagesCount} villages and ${confirmRestoreCloud.borrowersCount} borrowers.`}
             </p>
             <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/40 text-amber-800 dark:text-amber-300 text-xs text-left">
-              ⚠️ A safety snapshot of your current device data will be preserved automatically before restoring.
+              {lang === "te"
+                ? "⚠️ రీస్టోర్ చేయడానికి ముందు మీ ప్రస్తుత ఫోన్ డేటా ఆటోమేటిక్‌గా భద్రతా కాపీగా సేవ్ చేయబడుతుంది."
+                : "⚠️ A safety snapshot of your current device data will be preserved automatically before restoring."}
             </div>
             <div className="flex gap-2 pt-2">
               <button
                 onClick={() => setConfirmRestoreCloud(null)}
                 className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300 cursor-pointer hover:bg-slate-200"
               >
-                Cancel
+                {lang === "te" ? "రద్దు" : "Cancel"}
               </button>
               <button
                 onClick={() => handleRestoreCloud(confirmRestoreCloud)}
                 className="flex-1 py-2.5 rounded-xl bg-blue-600 text-white font-bold text-xs cursor-pointer hover:bg-blue-700"
               >
-                Confirm & Restore
+                {lang === "te" ? "నిర్ధారించి రీస్టోర్ చేయి" : "Confirm & Restore"}
               </button>
             </div>
           </div>
@@ -1345,6 +2171,100 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
       {/* LINE VILLAGES MANAGEMENT */}
       {activeSection === "villages" && (
         <div className="space-y-4">
+          {/* Operating Days Preference (Specific Days vs Daily) */}
+          <div className="rounded-3xl p-5 bg-white dark:bg-[#131B2E] border border-sky-200 dark:border-sky-800/60 space-y-3 shadow-sm">
+            <div className="flex items-center gap-2">
+              <Calendar className="w-5 h-5 text-sky-700 dark:text-sky-400 shrink-0" />
+              <div>
+                <h3 className="font-black text-base text-slate-900 dark:text-slate-100">
+                  {lang === "te" ? "వారపు లైన్ రోజులు" : "Weekly Line Schedule Days"}
+                </h3>
+                <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                  {lang === "te"
+                    ? "మీరు ప్రతిరోజు లైన్ చేస్తారా లేదా వారానికి కొన్ని రోజులు చేస్తారా ఎంచుకోండి"
+                    : "Choose whether you run your collection line daily or on specific weekdays."}
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateProfile({
+                    ...profile,
+                    lineDaysMode: "specific",
+                    lineDays:
+                      profile.lineDays && profile.lineDays.length > 0 && profile.lineDays.length < 7
+                        ? profile.lineDays
+                        : ["Monday", "Tuesday"],
+                    lineDaysConfigured: true,
+                  })
+                }
+                className={`min-h-[42px] rounded-xl px-3 py-2 text-xs font-extrabold border cursor-pointer transition-all ${
+                  (profile.lineDaysMode || "specific") === "specific"
+                    ? "bg-sky-700 text-white border-sky-700"
+                    : "bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700"
+                }`}
+              >
+                {lang === "te" ? "ఎంచుకున్న రోజులు" : "Specific Days"}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateProfile({
+                    ...profile,
+                    lineDaysMode: "daily",
+                    lineDays: [...ALL_DAYS_MON_FIRST],
+                    lineDaysConfigured: true,
+                  })
+                }
+                className={`min-h-[42px] rounded-xl px-3 py-2 text-xs font-extrabold border cursor-pointer transition-all ${
+                  profile.lineDaysMode === "daily"
+                    ? "bg-sky-700 text-white border-sky-700"
+                    : "bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700"
+                }`}
+              >
+                {lang === "te" ? "ప్రతి రోజు (Daily)" : "Daily (All 7 Days)"}
+              </button>
+            </div>
+
+            {(profile.lineDaysMode || "specific") === "specific" && (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {ALL_DAYS_MON_FIRST.map((day) => {
+                  const activeDays = profile.lineDays || ["Monday", "Tuesday"];
+                  const selected = activeDays.includes(day);
+                  return (
+                    <button
+                      key={day}
+                      type="button"
+                      onClick={() => {
+                        const nextDays = selected
+                          ? activeDays.length > 1
+                            ? activeDays.filter((d) => d !== day)
+                            : activeDays
+                          : [...activeDays, day];
+                        onUpdateProfile({
+                          ...profile,
+                          lineDaysMode: "specific",
+                          lineDays: nextDays,
+                          lineDaysConfigured: true,
+                        });
+                      }}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold border cursor-pointer transition-all ${
+                        selected
+                          ? "bg-amber-500 text-white border-amber-500 shadow-xs"
+                          : "bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700"
+                      }`}
+                    >
+                      {lang === "te" ? translateDayName(day, "te") : day.slice(0, 3)}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           <div className="rounded-3xl p-5 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800 space-y-3 shadow-sm">
             <h3 className="font-black text-base text-slate-900 dark:text-slate-100">
               {lang === "te" ? "కొత్త గ్రామం చేర్చండి" : "Add Line Village"}
@@ -1371,17 +2291,20 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 </label>
                 <select
                   value={vDay}
-                  onChange={(e) => setVDay(e.target.value as "Monday" | "Tuesday")}
+                  onChange={(e) => setVDay(e.target.value as DayOfWeek)}
                   className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm outline-none focus:border-blue-500 cursor-pointer"
                 >
-                  <option value="Monday">Monday (సోమవారం)</option>
-                  <option value="Tuesday">Tuesday (మంగళవారం)</option>
+                  {ALL_DAYS_MON_FIRST.map((day) => (
+                    <option key={day} value={day}>
+                      {day} ({translateDayName(day, "te")})
+                    </option>
+                  ))}
                 </select>
               </div>
 
               <button
                 type="submit"
-                className="w-full py-3 rounded-2xl bg-[#1E3A8A] text-white font-bold text-xs cursor-pointer shadow-md hover:bg-blue-900"
+                className="w-full min-h-[44px] py-3 rounded-2xl bg-[#1E3A8A] text-white font-bold text-xs cursor-pointer shadow-md hover:bg-blue-900"
               >
                 + {lang === "te" ? "గ్రామం జోడించండి" : "Add Village"}
               </button>
@@ -1395,21 +2318,49 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               return (
                 <div
                   key={v.id}
-                  className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs shadow-sm"
+                  className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs shadow-sm"
                 >
-                  <div>
+                  <div className="min-w-0">
                     <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">{v.name}</h4>
                     <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                      {v.day} · {bCount} {lang === "te" ? "ఖాతాదారులు" : "borrowers"}
+                      {translateDayName(v.day, lang)} · {bCount} {lang === "te" ? "ఖాతాదారులు" : "borrowers"}
                     </p>
                   </div>
 
-                  <button
-                    onClick={() => setDeleteVillageConfirm(v)}
-                    className="px-3 py-1.5 rounded-xl bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-400 font-bold text-xs cursor-pointer hover:bg-red-200"
-                  >
-                    Remove
-                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <select
+                      aria-label={`Change collection day for ${v.name}`}
+                      value={v.day}
+                      onChange={(e) => {
+                        const nextDay = e.target.value as DayOfWeek;
+                        onUpdateData({
+                          ...data,
+                          villages: data.villages.map((item) =>
+                            item.id === v.id ? { ...item, day: nextDay } : item
+                          ),
+                        });
+                        showToast(
+                          lang === "te"
+                            ? `${v.name} రోజు ${translateDayName(nextDay, "te")} కు మారింది ✓`
+                            : `${v.name} moved to ${nextDay} ✓`,
+                          "success"
+                        );
+                      }}
+                      className="min-h-[38px] px-2.5 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold text-xs outline-none cursor-pointer"
+                    >
+                      {ALL_DAYS_MON_FIRST.map((day) => (
+                        <option key={day} value={day}>
+                          {day}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => setDeleteVillageConfirm(v)}
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-400 font-bold text-xs cursor-pointer hover:bg-red-200"
+                    >
+                      {lang === "te" ? "తొలగించు" : "Remove"}
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -1422,24 +2373,25 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                   <AlertTriangle className="w-6 h-6" />
                 </div>
                 <h3 className="font-black text-base text-slate-900 dark:text-slate-100 mb-1">
-                  Remove Village?
+                  {lang === "te" ? "గ్రామాన్ని తొలగించాలా?" : "Remove Village?"}
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-                  Are you sure you want to remove "{deleteVillageConfirm.name}"?
-                  All associated borrowers will be deleted.
+                  {lang === "te"
+                    ? `"${deleteVillageConfirm.name}" ను తొలగించాలా? ఈ గ్రామంలోని ఖాతాదారులు కూడా తొలగించబడతారు.`
+                    : `Are you sure you want to remove "${deleteVillageConfirm.name}"? All associated borrowers will be deleted.`}
                 </p>
                 <div className="flex gap-2">
                   <button
                     onClick={() => setDeleteVillageConfirm(null)}
                     className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300 cursor-pointer hover:bg-slate-200"
                   >
-                    Cancel
+                    {lang === "te" ? "రద్దు" : "Cancel"}
                   </button>
                   <button
                     onClick={() => handleRemoveVillage(deleteVillageConfirm.id)}
                     className="flex-1 py-2.5 rounded-xl bg-red-600 text-white font-bold text-xs cursor-pointer hover:bg-red-700"
                   >
-                    Yes, Remove
+                    {lang === "te" ? "అవును, తొలగించు" : "Yes, Remove"}
                   </button>
                 </div>
               </div>
@@ -1570,7 +2522,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
             {/* 3. Business Name & Tagline Inputs */}
             <div>
               <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1 uppercase tracking-wide">
-                Finance Business Name *
+                {lang === "te" ? "ఫైనాన్స్ వ్యాపారం పేరు *" : "Finance Business Name *"}
               </label>
               <input
                 type="text"
@@ -1584,7 +2536,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
 
             <div>
               <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1 uppercase tracking-wide">
-                Tagline
+                {lang === "te" ? "ట్యాగ్‌లైన్ / ఉప శీర్షిక" : "Tagline"}
               </label>
               <input
                 type="text"
@@ -1597,26 +2549,26 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
 
             <div>
               <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1 uppercase tracking-wide">
-                Owner / Manager Name
+                {lang === "te" ? "యజమాని / మేనేజర్ పేరు" : "Owner / Manager Name"}
               </label>
               <input
                 type="text"
                 value={ownerName}
                 onChange={(e) => setOwnerName(e.target.value)}
-                placeholder="Your name"
+                placeholder={lang === "te" ? "మీ పేరు" : "Your name"}
                 className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm outline-none focus:border-blue-500"
               />
             </div>
 
             <div>
               <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1 uppercase tracking-wide">
-                Contact Phone Number
+                {lang === "te" ? "సంప్రదింపు ఫోన్ నంబర్" : "Contact Phone Number"}
               </label>
               <input
                 type="tel"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                placeholder="10-digit phone number"
+                placeholder={lang === "te" ? "10-అంకెల ఫోన్ నంబర్" : "10-digit phone number"}
                 className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm outline-none focus:border-blue-500"
               />
             </div>

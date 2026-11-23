@@ -13,16 +13,19 @@ if (typeof window !== 'undefined') {
   });
 }
 
+import { isNativeAndroidApk } from '../utils/platformUtils';
+
 export function usePWAInstall() {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(
     globalDeferredPrompt
   );
-  const [isInstalled, setIsInstalled] = useState(false);
+  const [isInstalled, setIsInstalled] = useState(() => isNativeAndroidApk());
   const [isIOS, setIsIOS] = useState(false);
 
   useEffect(() => {
-    // Detect standalone mode (already installed as PWA or launched from homescreen)
+    // Detect native APK or standalone PWA mode
     const isStandalone =
+      isNativeAndroidApk() ||
       window.matchMedia('(display-mode: standalone)').matches ||
       (window.navigator as unknown as { standalone?: boolean }).standalone === true;
     setIsInstalled(isStandalone);

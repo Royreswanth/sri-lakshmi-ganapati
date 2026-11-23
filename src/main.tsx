@@ -1,9 +1,12 @@
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
+import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import './index.css';
 
-// Register PWA service worker for 100% offline village mode
-if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+import { isNativeAndroidApk } from './utils/platformUtils';
+
+// Register PWA service worker for offline browser mode (skipped inside native APK bundle)
+if (!isNativeAndroidApk() && typeof window !== 'undefined' && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker
       .register('/sw.js', { scope: '/' })
@@ -16,4 +19,8 @@ if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
   });
 }
 
-createRoot(document.getElementById('root')!).render(<App />);
+createRoot(document.getElementById('root')!).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>
+);

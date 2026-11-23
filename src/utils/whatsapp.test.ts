@@ -5,10 +5,12 @@ import {
   buildAdvanceReminderText,
   getTwoDayAdvanceInfo,
   normalizePhoneNumber,
+  getTelHref,
   getWhatsAppUrl,
   isBorrowerKeypad,
   isBorrowerReceiptDisabled,
   canAutoSendReceipt,
+  shouldShowReminderBanner,
 } from "./whatsapp.ts";
 import { Borrower, Village } from "../types.ts";
 
@@ -231,3 +233,86 @@ test("strictly blocks canAutoSendReceipt when receipt option is disabled in borr
   assert.equal(isBorrowerReceiptDisabled(stringTruthyBorrower, "v1", generalWhatsAppEnabledRules), true);
   assert.equal(canAutoSendReceipt(stringTruthyBorrower, "v1", generalWhatsAppEnabledRules), false);
 });
+
+test("getTwoDayAdvanceInfo supports all 7 weekdays (e.g. Monday -> Wednesday, Thursday -> Saturday)", () => {
+  const villages: Village[] = [
+    { id: "v3", name: "Attili", day: "Wednesday" },
+    { id: "v4", name: "Tanuku", day: "Saturday" },
+  ];
+
+  // Monday 2026-11-02 -> 2 days ahead is Wednesday
+  const monday = new Date(2026, 10, 2, 12, 0, 0);
+  const monInfo = getTwoDayAdvanceInfo(villages, monday);
+  assert.equal(monInfo.isTwoDaysAhead, true);
+  assert.equal(monInfo.targetDayName, "Wednesday");
+  assert.equal(monInfo.matchingVillages[0]?.name, "Attili");
+
+  // Thursday 2026-11-05 -> 2 days ahead is Saturday
+  const thursday = new Date(2026, 10, 5, 12, 0, 0);
+  const thuInfo = getTwoDayAdvanceInfo(villages, thursday);
+  assert.equal(thuInfo.isTwoDaysAhead, true);
+  assert.equal(thuInfo.targetDayName, "Saturday");
+  assert.equal(thuInfo.matchingVillages[0]?.name, "Tanuku");
+});
+
+test("getTelHref creates normalized Indian tel: URIs and rejects invalid short inputs", () => {
+  assert.equal(getTelHref("9876543210"), "tel:+919876543210");
+  assert.equal(getTelHref("09876543210"), "tel:+919876543210");
+  assert.equal(getTelHref("12345"), null);
+  assert.equal(getTelHref(""), null);
+});
+
+test("shouldShowReminderBanner hides notification when WhatsApp or reminder options are turned off", () => {
+  const village: Village = { id: "v1", name: "Polamuru", day: "Tuesday" };
+  const activeB: Borrower = {
+    id: "b1",
+    seqNo: "1",
+    name: "Raju",
+    phone: "9876543210",
+    loanAmt: 10000,
+    durationWeeks: 12,
+    interestPct: 20,
+    weeklyDue: 1000,
+    totalReturn: 12000,
+    weeksPaid: 1,
+    startDate: "2026-11-01",
+    history: [],
+    hasWhatsApp: true,
+  };
+  const data = { villages: [village], borrowers: { v1: [activeB] } };
+
+  const baseRules = {
+    masterEnabled: true,
+    autoReceiptOnPayment: true,
+    autoTwoDayReminder: true,
+    borrowerConfigs: {},
+    villageConfigs: {},
+  };
+
+  assert.equal(shouldShowReminderBanner(data, baseRules), true);
+  assert.equal(shouldShowReminderBanner(data, { ...baseRules, masterEnabled: false }), false);
+  assert.equal(shouldShowReminderBanner(data, { ...baseRules, autoTwoDayReminder: false }), false);
+  assert.equal(
+    shouldShowReminderBanner(data, {
+      ...baseRules,
+      villageConfigs: { v1: { disableReminder: true } },
+    }),
+    false
+  );
+  assert.equal(
+    shouldShowReminderBanner(
+      { villages: [village], borrowers: { v1: [{ ...activeB, disableReminder: true }] } },
+      baseRules
+    ),
+    false
+  );
+  assert.equal(
+    shouldShowReminderBanner(
+      { villages: [village], borrowers: { v1: [{ ...activeB, hasWhatsApp: false }] } },
+      baseRules
+    ),
+    false
+  );
+  assert.equal(shouldShowReminderBanner({ villages: [], borrowers: {} }, baseRules), false);
+});
+

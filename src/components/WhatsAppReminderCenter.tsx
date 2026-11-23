@@ -21,9 +21,9 @@ import {
   formatCurrency,
   formatDateIN,
   getDayName,
-  getTodayStr,
   calculateRemainingBalance,
 } from "../utils/dateUtils";
+import { getFrequencyShortPrefix, isBorrowerClosed } from "../utils/financeUtils";
 import {
   buildAdvanceReminderText,
   openWhatsApp,
@@ -77,7 +77,7 @@ export const WhatsAppReminderCenter: React.FC<WhatsAppReminderCenterProps> = ({
     if (!selectedVillageId) return [];
     const list = data.borrowers[selectedVillageId] || [];
     return [...list]
-      .filter((b) => b.weeksPaid < (b.durationWeeks || 12))
+      .filter((b) => !isBorrowerClosed(b))
       .sort((a, b) => {
         const na = a.seqNo ? parseInt(a.seqNo) || 0 : 99999;
         const nb = b.seqNo ? parseInt(b.seqNo) || 0 : 99999;
@@ -259,7 +259,7 @@ export const WhatsAppReminderCenter: React.FC<WhatsAppReminderCenterProps> = ({
               {data.villages.map((v) => {
                 const isSelected = v.id === selectedVillageId;
                 const bCount = (data.borrowers[v.id] || []).filter(
-                  (b) => b.weeksPaid < (b.durationWeeks || 12)
+                  (b) => !isBorrowerClosed(b)
                 ).length;
 
                 return (
@@ -360,9 +360,9 @@ export const WhatsAppReminderCenter: React.FC<WhatsAppReminderCenterProps> = ({
                   b.disableReminder || bCfg?.disableReminder || vCfg?.disableReminder
                 );
                 const isSent = isReminderSent(b.id, targetDateStr);
-                const remBal = calculateRemainingBalance(b);
                 const nextWeek = b.weeksPaid + 1;
                 const totalWeeks = b.durationWeeks || 12;
+                const freqPrefix = getFrequencyShortPrefix(b.repaymentFreq);
 
                 return (
                   <div
@@ -406,7 +406,7 @@ export const WhatsAppReminderCenter: React.FC<WhatsAppReminderCenterProps> = ({
                         </span>
                         <span>·</span>
                         <span>
-                          Wk {nextWeek}/{totalWeeks}
+                          {freqPrefix} {nextWeek}/{totalWeeks}
                         </span>
                         <span>·</span>
                         <span>

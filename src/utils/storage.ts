@@ -1,4 +1,5 @@
 import type { BusinessProfile, Language, ThemeMode } from "../types.ts";
+import { saveOrShareTextFile } from "./platformUtils";
 
 export const STORAGE_KEYS = {
   DATA: "slg_data",
@@ -12,6 +13,7 @@ export const STORAGE_KEYS = {
   THEME: "slg_theme",
   WHATSAPP_RULES: "slg_whatsapp_rules",
   RECEIPTS_SENT: "slg_receipts_sent",
+  CASH_OPENING: "slg_cash_opening",
 } as const;
 
 export const DB = {
@@ -55,8 +57,15 @@ export const DEFAULT_PROFILE: BusinessProfile = {
   modelType: "sole_owner",
   partners: [],
   workers: [],
-  subscriptionPlan: "half_yearly",
+  subscriptionPlan: "unsubscribed",
+  subscriptionStatus: "unsubscribed",
+  subscriptionExpiresAt: "",
   trialEndsAt: twoWeeksLater.toISOString().split("T")[0],
+  lineDaysMode: "specific",
+  lineDays: ["Monday", "Tuesday"],
+  lineDaysConfigured: false,
+  enableDailyCashbook: true,
+  lineCycleWeeks: 12,
 };
 
 export interface BackupPayload {
@@ -79,6 +88,7 @@ export function generateBackupPayload(): BackupPayload {
     STORAGE_KEYS.THEME,
     STORAGE_KEYS.WHATSAPP_RULES,
     STORAGE_KEYS.RECEIPTS_SENT,
+    STORAGE_KEYS.CASH_OPENING,
   ];
 
   const backupData: Record<string, unknown> = {};
@@ -103,42 +113,31 @@ export function generateBackupPayload(): BackupPayload {
 
 export function downloadBackupFile(payload: BackupPayload, filename?: string): void {
   const jsonStr = JSON.stringify(payload, null, 2);
-  const blob = new Blob([jsonStr], { type: "application/json" });
   const dateStr = new Date().toISOString().split("T")[0];
   const finalName = filename || `LineBookPro_Backup_${dateStr}.json`;
 
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = finalName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  void saveOrShareTextFile({
+    filename: finalName,
+    content: jsonStr,
+    mimeType: "application/json",
+    title: "LineBook Pro Backup",
+    text: `Line Finance database backup dated ${dateStr}`,
+  });
 }
 
 export async function shareBackupFile(payload: BackupPayload): Promise<boolean> {
   const jsonStr = JSON.stringify(payload, null, 2);
   const dateStr = new Date().toISOString().split("T")[0];
   const fileName = `LineBookPro_Backup_${dateStr}.json`;
-  const file = new File([jsonStr], fileName, { type: "application/json" });
 
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try {
-      await navigator.share({
-        title: "LineBook Pro Backup",
-        text: `Line Finance database backup dated ${dateStr}`,
-        files: [file]
-      });
-      return true;
-    } catch {
-      downloadBackupFile(payload, fileName);
-      return false;
-    }
-  } else {
-    downloadBackupFile(payload, fileName);
-    return true;
-  }
+  return saveOrShareTextFile({
+    filename: fileName,
+    content: jsonStr,
+    mimeType: "application/json",
+    title: "LineBook Pro Backup",
+    text: `Line Finance database backup dated ${dateStr}`,
+    preferShareSheet: true,
+  });
 }
 
 export function restoreBackupPayload(payload: any): { success: boolean; message: string; borrowerCount?: number } {
@@ -251,7 +250,10 @@ export function clearAllAppData(options: { includeProfileAndPin?: boolean } = {}
     STORAGE_KEYS.NEW_LOANS,
     STORAGE_KEYS.PERSONAL,
     STORAGE_KEYS.RECEIPTS_SENT,
+    STORAGE_KEYS.CASH_OPENING,
     "slg_last_cloud_backup",
+    "slg_local_backup_at",
+    "slg_onboarding_dismissed",
   ];
 
   for (const k of ledgerKeys) {

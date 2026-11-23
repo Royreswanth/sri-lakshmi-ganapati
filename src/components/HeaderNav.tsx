@@ -37,7 +37,7 @@ export const HeaderNav: React.FC<HeaderNavProps> = ({
   showFullBranding = false,
 }) => {
   return (
-    <header className="px-4 py-3 sticky top-0 z-40 transition-colors backdrop-blur-md bg-white/80 dark:bg-[#0B0F19]/80 border-b border-slate-200/80 dark:border-slate-800/80">
+    <header className="px-4 py-3 sticky top-0 z-40 transition-colors backdrop-blur-md bg-white/80 dark:bg-[#0B0F19]/80 border-b border-slate-200/80 dark:border-slate-800/80 print:hidden">
       <div className="flex items-center justify-between gap-2">
         {/* Left Action: Prominent Back button or clean spacing (Menu option removed as requested) */}
         <div className="w-10 flex items-center justify-start">

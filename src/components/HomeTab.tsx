@@ -9,16 +9,19 @@ import {
   AlertCircle,
   PiggyBank,
   ChevronRight,
-  ArrowUpRight,
-  ArrowDownLeft,
   Calendar,
-  CheckCircle2,
-  Clock,
   ArrowLeft,
   Wallet,
   HandCoins,
   Bell,
   MessageCircle,
+  Calculator,
+  BookOpen,
+  ClipboardList,
+  CheckCircle2,
+  Circle,
+  Sparkles,
+  X,
 } from "lucide-react";
 import {
   Borrower,
@@ -33,25 +36,30 @@ import {
 } from "../types";
 import { translations } from "../translations";
 import {
+  ALL_DAYS_MON_FIRST,
   formatCurrency,
   formatDateIN,
   getDayName,
   getMondayOfWeek,
   getWeekDates,
   getTodayStr,
+  translateDayName,
 } from "../utils/dateUtils";
 import {
   calculateOutstandingInField,
-  calculateTotalPersonalUse,
-  calculateTodayCashInBag,
+  calculateLineCashStatus,
   calculateNetProfit,
   calculateTotalShortfall,
-  calculateRemainingBalance,
-  calculateTotalPaid,
+  isBorrowerClosed,
 } from "../utils/financeUtils";
 import { PWAInstallBanner } from "./PWAInstallBanner";
 import { WhatsAppReminderCenter } from "./WhatsAppReminderCenter";
-import { getTwoDayAdvanceInfo } from "../utils/whatsapp";
+import {
+  getTwoDayAdvanceInfo,
+  getWhatsAppRules,
+  shouldShowReminderBanner,
+} from "../utils/whatsapp";
+import { computeOnboardingProgress, OnboardingStepId } from "../utils/onboardingUtils";
 
 interface HomeTabProps {
   data: { villages: Village[]; borrowers: Record<string, Borrower[]> };
@@ -60,10 +68,16 @@ interface HomeTabProps {
   newLoansLog: NewLoanLogItem[];
   personalLog: PersonalUseItem[];
   profile: BusinessProfile;
+  hasBackup?: boolean;
   lang: Language;
   theme?: ThemeMode;
-  onNavigateTab: (tab: any) => void;
+  onNavigateTab: (
+    tab: any,
+    settingsSection?: any,
+    reportsView?: "summary" | "recordBook" | "weeks" | "villages"
+  ) => void;
   onRecordPersonalUse: (amt: number, note: string) => void;
+  onUpdateProfile: (p: BusinessProfile) => void;
 }
 
 export const HomeTab: React.FC<HomeTabProps> = ({
@@ -73,10 +87,12 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   newLoansLog,
   personalLog,
   profile,
+  hasBackup = false,
   lang,
   theme = "light",
   onNavigateTab,
   onRecordPersonalUse,
+  onUpdateProfile,
 }) => {
   const [showBalance, setShowBalance] = useState(true);
   const [personalModal, setPersonalModal] = useState(false);
@@ -84,14 +100,56 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   const [personalNote, setPersonalNote] = useState("");
   const [selectedWeekDetail, setSelectedWeekDetail] = useState<string | null>(null);
   const [showReminderCenter, setShowReminderCenter] = useState(false);
+  const [scheduleModeDraft, setScheduleModeDraft] = useState<"specific" | "daily">(
+    profile.lineDaysMode || "specific"
+  );
+  const [scheduleDaysDraft, setScheduleDaysDraft] = useState(
+    profile.lineDays && profile.lineDays.length > 0
+      ? profile.lineDays
+      : (["Monday", "Tuesday"] as typeof ALL_DAYS_MON_FIRST)
+  );
+  const [onboardingDismissed, setOnboardingDismissed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("slg_onboarding_dismissed") === "true";
+    } catch {
+      return false;
+    }
+  });
 
   const advanceInfo = useMemo(() => getTwoDayAdvanceInfo(data.villages), [data.villages]);
+  const waRules = getWhatsAppRules();
+  const showWaReminderBanner = shouldShowReminderBanner(data, waRules);
 
   const t = translations[lang];
   const todayStr = getTodayStr();
   const dayOfWeek = getDayName(todayStr, "en");
 
   const allBorrowers = Object.values(data.borrowers).flat();
+  const onboarding = useMemo(
+    () =>
+      computeOnboardingProgress({
+        profile,
+        villagesCount: data.villages.length,
+        borrowersCount: allBorrowers.length,
+        hasCloudOrLocalBackup: hasBackup,
+      }),
+    [profile, data.villages.length, allBorrowers.length, hasBackup]
+  );
+
+  const handleOnboardingStepClick = (stepId: OnboardingStepId) => {
+    if (stepId === "profile") onNavigateTab("settings", "profile");
+    else if (stepId === "village") onNavigateTab("settings", "villages");
+    else if (stepId === "borrower") {
+      onNavigateTab(data.villages.length > 0 ? "collect" : "borrowers");
+    } else if (stepId === "backup") onNavigateTab("settings", "backup");
+  };
+
+  const handleDismissOnboarding = () => {
+    setOnboardingDismissed(true);
+    try {
+      localStorage.setItem("slg_onboarding_dismissed", "true");
+    } catch {}
+  };
   const totalLent = allBorrowers.reduce((s, b) => s + (b.loanAmt || 0), 0);
   const totalReturn = allBorrowers.reduce(
     (s, b) => s + (b.totalReturn || b.weeklyDue * (b.durationWeeks || 12)),
@@ -106,17 +164,20 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     (s, c) => s + (c.totalCollected || 0),
     0
   );
-  // Source of truth for personal use withdrawals (Fix D6)
-  const totalPersonal = calculateTotalPersonalUse(personalLog, collections);
+  // Real Line Cash in Hand + 2-day automatic Home-Taken recognition
+  const lineCashStatus = calculateLineCashStatus({
+    collections,
+    newLoansLog,
+    expenses,
+    personalLog,
+    todayStr,
+  });
+  const totalPersonal = lineCashStatus.totalTakenCash;
   const totalExpenses = expenses.reduce((s, e) => s + (e.amt || 0), 0);
   const netProfit = calculateNetProfit(totalCollected, totalExpenses, totalPersonal);
 
-  const activeCount = allBorrowers.filter(
-    (b) => b.weeksPaid < (b.durationWeeks || 12)
-  ).length;
-  const completedCount = allBorrowers.filter(
-    (b) => b.weeksPaid >= (b.durationWeeks || 12)
-  ).length;
+  const activeCount = allBorrowers.filter((b) => !isBorrowerClosed(b)).length;
+  const completedCount = allBorrowers.filter((b) => isBorrowerClosed(b)).length;
 
   // Total Unpaid Short Amount across active borrowers (Fix D3)
   const totalShortAmount = allBorrowers.reduce(
@@ -127,29 +188,8 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   // Today's scheduled villages on the LINE
   const todayLineVillages = data.villages.filter((v) => v.day === dayOfWeek);
 
-  // Today's collections
-  const todayColls = Object.values(collections).filter((c) => c.date === todayStr);
-  const todayCollectedAmt = todayColls.reduce((s, c) => s + (c.totalCollected || 0), 0);
-
-  // Today's expenses
-  const todayExpenses = expenses.filter((e) => e.date === todayStr);
-  const todayExpAmt = todayExpenses.reduce((s, e) => s + (e.amt || 0), 0);
-
-  // Today's new loans
-  const todayNewLoans = newLoansLog.filter((l) => l.date === todayStr);
-  const todayNewLoansAmt = todayNewLoans.reduce((s, l) => s + (l.loanAmt || 0), 0);
-
-  // Today's personal withdrawals (Fix D6)
-  const todayPersonal = (personalLog || []).filter((p) => p.date === todayStr);
-  const todayPersonalAmt = todayPersonal.reduce((s, p) => s + (p.amt || 0), 0);
-
-  // Cash in Hand / Bag for today (Fix D6 & D8)
-  const lineBagCash = calculateTodayCashInBag(
-    todayCollectedAmt,
-    todayExpAmt,
-    todayNewLoansAmt,
-    todayPersonalAmt
-  );
+  // Live accumulated physical Cash in Hand on the line (auto-deducted for new loans & auto home-taken after 2 days)
+  const lineBagCash = lineCashStatus.lineCashInHand;
 
   // Weeks list for reports
   const allMondays = Array.from(
@@ -324,50 +364,63 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
         {/* Balance Display */}
         <div className="mt-3 relative z-10">
-          <div className="text-3xl sm:text-4xl font-black text-white tracking-tight font-sans">
+          <div className="text-3xl sm:text-4xl font-black text-white tracking-tight font-sans tabular-nums">
             {showBalance ? formatCurrency(outstandingInField) : "₹ ••••••••"}
           </div>
 
           <div className="flex items-center gap-2 mt-2.5 flex-wrap text-xs">
-            <span className="font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
+            <span className="font-bold px-2.5 py-0.5 rounded-full bg-blue-500/20 text-blue-200 border border-blue-400/30 tabular-nums">
               {lang === "te" ? "అప్పు:" : "Lent:"} {formatCurrency(totalLent)}
             </span>
-            <span className="font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+            <span className="font-bold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-200 border border-emerald-400/30 tabular-nums">
               ↑ {formatCurrency(totalCollected)} {lang === "te" ? "వసూలు" : "collected"}
             </span>
-            <span className="font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+            <span className="font-bold px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-200 border border-amber-400/30 tabular-nums">
               {activeCount} {lang === "te" ? "యాక్టివ్" : "active"}
             </span>
           </div>
         </div>
 
         {/* Quick In-Hand Cash Strip */}
-        <div className="mt-4 pt-3.5 border-t border-white/10 flex items-center justify-between text-xs font-semibold relative z-10">
-          <div className="flex items-center gap-1.5 text-slate-300">
-            <Coins className="w-3.5 h-3.5 text-amber-400" />
-            <span>
-              {lang === "te" ? "లైన్ క్యాష్ (నేటి చేతిలో):" : "Line Cash in Hand:"}
+        <div className="mt-4 pt-3.5 border-t border-white/15 space-y-1.5 relative z-10">
+          <div className="flex items-center justify-between text-xs font-semibold">
+            <div className="flex items-center gap-1.5 text-slate-200">
+              <Coins className="w-3.5 h-3.5 text-amber-400" />
+              <span>
+                {lang === "te" ? "లైన్ చేతిలో ఉన్న నగదు:" : "Line Cash in Hand:"}
+              </span>
+            </div>
+            <span className="text-amber-300 font-black text-sm tracking-wide tabular-nums">
+              {showBalance ? formatCurrency(lineBagCash) : "₹ •••••"}
             </span>
           </div>
-          <span className="text-amber-300 font-black text-sm tracking-wide">
-            {showBalance ? formatCurrency(lineBagCash) : "₹ •••••"}
-          </span>
+          {lineCashStatus.autoHomeTakenTotal > 0 && (
+            <div className="flex items-center justify-between text-[11px] text-amber-200/90">
+              <span>
+                {lang === "te"
+                  ? "🏠 2 రోజులలో కొత్త అప్పు ఇవ్వనందున ఇంటికి తీసుకున్నది:"
+                  : "🏠 Auto Home-Taken (no new loan within 2 days):"}
+              </span>
+              <span className="font-bold tabular-nums">
+                {showBalance ? formatCurrency(lineCashStatus.autoHomeTakenTotal) : "₹ •••••"}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* 2. FOUR REFINED SQUIRCLE QUICK ACTIONS (Structure from Image 2, Colours from Image 1) */}
+      {/* 2. FOUR REFINED SQUIRCLE QUICK ACTIONS */}
       <div className="grid grid-cols-4 gap-2.5 text-center pt-1">
         {/* 1. Start Line Collection */}
         <div className="flex flex-col items-center gap-2">
           <button
             onClick={() => onNavigateTab("collect")}
-            style={{ backgroundColor: "#0E1726" }}
-            className="w-14 h-14 sm:w-16 sm:h-16 rounded-[22px] flex items-center justify-center border border-slate-700/60 shadow-[0_4px_14px_rgba(0,0,0,0.18)] hover:scale-105 active:scale-95 transition-all cursor-pointer group"
+            className="w-14 h-14 sm:w-16 sm:h-16 rounded-[22px] bg-white dark:bg-[#131B2E] flex items-center justify-center border border-slate-200 dark:border-slate-800 shadow-sm hover:border-amber-500/60 hover:scale-105 active:scale-95 transition-all cursor-pointer group"
             title="Start Line Collection"
           >
-            <HandCoins className="w-6 h-6 sm:w-7 sm:h-7 text-[#FBBF24] group-hover:scale-110 transition-transform" strokeWidth={2.2} />
+            <HandCoins className="w-6 h-6 sm:w-7 sm:h-7 text-amber-600 dark:text-amber-400 group-hover:scale-110 transition-transform" strokeWidth={2.2} />
           </button>
-          <span className="text-[11px] sm:text-xs font-bold text-slate-500 dark:text-slate-400 tracking-tight">
+          <span className="text-[11px] sm:text-xs font-bold text-slate-700 dark:text-slate-300 tracking-tight">
             {lang === "te" ? "లైన్ వసూలు" : "Start Line"}
           </span>
         </div>
@@ -376,13 +429,12 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         <div className="flex flex-col items-center gap-2">
           <button
             onClick={() => onNavigateTab("collect")}
-            style={{ backgroundColor: "#0E1726" }}
-            className="w-14 h-14 sm:w-16 sm:h-16 rounded-[22px] flex items-center justify-center border border-slate-700/60 shadow-[0_4px_14px_rgba(0,0,0,0.18)] hover:scale-105 active:scale-95 transition-all cursor-pointer group"
+            className="w-14 h-14 sm:w-16 sm:h-16 rounded-[22px] bg-white dark:bg-[#131B2E] flex items-center justify-center border border-slate-200 dark:border-slate-800 shadow-sm hover:border-blue-500/60 hover:scale-105 active:scale-95 transition-all cursor-pointer group"
             title="Add New Loan"
           >
-            <UserPlus className="w-6 h-6 sm:w-7 sm:h-7 text-[#38BDF8] group-hover:scale-110 transition-transform" strokeWidth={2.2} />
+            <UserPlus className="w-6 h-6 sm:w-7 sm:h-7 text-blue-700 dark:text-sky-400 group-hover:scale-110 transition-transform" strokeWidth={2.2} />
           </button>
-          <span className="text-[11px] sm:text-xs font-bold text-slate-500 dark:text-slate-400 tracking-tight">
+          <span className="text-[11px] sm:text-xs font-bold text-slate-700 dark:text-slate-300 tracking-tight">
             {lang === "te" ? "కొత్త అప్పు" : "New Loan"}
           </span>
         </div>
@@ -391,13 +443,12 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         <div className="flex flex-col items-center gap-2">
           <button
             onClick={() => onNavigateTab("expenses")}
-            style={{ backgroundColor: "#0E1726" }}
-            className="w-14 h-14 sm:w-16 sm:h-16 rounded-[22px] flex items-center justify-center border border-slate-700/60 shadow-[0_4px_14px_rgba(0,0,0,0.18)] hover:scale-105 active:scale-95 transition-all cursor-pointer group"
+            className="w-14 h-14 sm:w-16 sm:h-16 rounded-[22px] bg-white dark:bg-[#131B2E] flex items-center justify-center border border-slate-200 dark:border-slate-800 shadow-sm hover:border-rose-500/60 hover:scale-105 active:scale-95 transition-all cursor-pointer group"
             title="Expenses & Fuel"
           >
-            <Receipt className="w-6 h-6 sm:w-7 sm:h-7 text-[#F43F5E] group-hover:scale-110 transition-transform" strokeWidth={2.2} />
+            <Receipt className="w-6 h-6 sm:w-7 sm:h-7 text-rose-600 dark:text-rose-400 group-hover:scale-110 transition-transform" strokeWidth={2.2} />
           </button>
-          <span className="text-[11px] sm:text-xs font-bold text-slate-500 dark:text-slate-400 tracking-tight">
+          <span className="text-[11px] sm:text-xs font-bold text-slate-700 dark:text-slate-300 tracking-tight">
             {lang === "te" ? "ఖర్చులు" : "Expenses"}
           </span>
         </div>
@@ -406,13 +457,12 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         <div className="flex flex-col items-center gap-2">
           <button
             onClick={() => onNavigateTab("reports")}
-            style={{ backgroundColor: "#0E1726" }}
-            className="w-14 h-14 sm:w-16 sm:h-16 rounded-[22px] flex items-center justify-center border border-slate-700/60 shadow-[0_4px_14px_rgba(0,0,0,0.18)] hover:scale-105 active:scale-95 transition-all cursor-pointer group"
+            className="w-14 h-14 sm:w-16 sm:h-16 rounded-[22px] bg-white dark:bg-[#131B2E] flex items-center justify-center border border-slate-200 dark:border-slate-800 shadow-sm hover:border-emerald-500/60 hover:scale-105 active:scale-95 transition-all cursor-pointer group"
             title="Reports & Analytics"
           >
-            <BarChart3 className="w-6 h-6 sm:w-7 sm:h-7 text-[#10B981] group-hover:scale-110 transition-transform" strokeWidth={2.2} />
+            <BarChart3 className="w-6 h-6 sm:w-7 sm:h-7 text-emerald-600 dark:text-emerald-400 group-hover:scale-110 transition-transform" strokeWidth={2.2} />
           </button>
-          <span className="text-[11px] sm:text-xs font-bold text-slate-500 dark:text-slate-400 tracking-tight">
+          <span className="text-[11px] sm:text-xs font-bold text-slate-700 dark:text-slate-300 tracking-tight">
             {lang === "te" ? "నివేదికలు" : "Reports"}
           </span>
         </div>
@@ -421,50 +471,225 @@ export const HomeTab: React.FC<HomeTabProps> = ({
       {/* Quick Personal Cash Withdrawal Action Button */}
       <button
         onClick={() => setPersonalModal(true)}
-        style={{ backgroundColor: "#3c539a" }}
-        className="w-full py-2.5 px-4 rounded-2xl border border-dashed border-amber-600/40 text-xs font-bold flex items-center justify-center gap-2 hover:opacity-95 active:scale-98 transition-all cursor-pointer"
+        className="w-full min-h-[44px] py-2.5 px-4 rounded-2xl bg-white dark:bg-[#131B2E] border border-dashed border-amber-500/70 dark:border-amber-500/50 text-slate-800 dark:text-slate-100 text-xs font-bold flex items-center justify-center gap-2 hover:bg-amber-50/70 dark:hover:bg-amber-950/30 active:scale-98 transition-all cursor-pointer shadow-xs"
       >
         <span>🏠</span>
-        <span style={{ color: "#c0b2b2" }}>
+        <span>
           {lang === "te"
             ? "నేటి వసూళ్ల నుండి వ్యక్తిగత/ఇంటి ఖర్చు నమోదు చేయండి"
             : "Record Personal / Home Use Cash Withdrawal"}
         </span>
       </button>
 
-      {/* 2-Day Advance WhatsApp Pre-Collection Reminders Alert Card (or Setup Prompt when empty) */}
-      {data.villages.length === 0 ? (
-        <div className="rounded-2xl p-4 bg-gradient-to-r from-blue-600/10 via-blue-500/5 to-transparent border border-blue-300/60 dark:border-blue-800/60 shadow-xs flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-11 h-11 rounded-2xl bg-[#1E3A8A] text-amber-300 flex items-center justify-center shrink-0 shadow-md text-lg">
-              📘
+      {/* Commercial Launch Onboarding Checklist (Auto-hides once 4/4 done or dismissed) */}
+      {!onboarding.allComplete && !onboardingDismissed && (
+        <section
+          aria-label={lang === "te" ? "త్వరిత ప్రారంభ చెక్‌లిస్ట్" : "Launch Setup Checklist"}
+          className="rounded-3xl p-4 sm:p-5 bg-white dark:bg-[#131B2E] border-2 border-blue-200 dark:border-blue-800/70 shadow-sm space-y-3.5"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-10 h-10 rounded-2xl bg-[#1E3A8A] text-amber-300 flex items-center justify-center shrink-0 shadow-xs">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-blue-700 dark:text-blue-400">
+                    {lang === "te" ? "త్వరిత సెటప్ గైడ్" : "Quick Start Checklist"}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/70 border border-blue-200 dark:border-blue-800 text-blue-800 dark:text-blue-300 text-[10px] font-black tabular-nums">
+                    {onboarding.completedCount}/{onboarding.totalCount}{" "}
+                    {lang === "te" ? "పూర్తయ్యాయి" : "Done"}
+                  </span>
+                </div>
+                <h3 className="text-sm font-black text-slate-900 dark:text-white leading-snug mt-0.5">
+                  {lang === "te"
+                    ? "మీ లైన్ వ్యాపారాన్ని 4 దశల్లో సిద్ధం చేయండి"
+                    : "Launch Your Digital Line Ledger in 4 Steps"}
+                </h3>
+              </div>
             </div>
-            <div className="min-w-0">
-              <span className="text-[10px] font-black uppercase tracking-wider text-blue-700 dark:text-blue-400">
-                {lang === "te" ? "కొత్త లైన్ ప్రారంభం" : "Clean Slate · Ready to Start"}
+
+            <button
+              type="button"
+              onClick={handleDismissOnboarding}
+              aria-label={lang === "te" ? "చెక్‌లిస్ట్ దాచండి" : "Dismiss setup checklist"}
+              title={lang === "te" ? "దాచండి" : "Dismiss"}
+              className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white flex items-center justify-center shrink-0 cursor-pointer transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Progress Bar */}
+          <div className="w-full h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-[#1E3A8A] to-emerald-500 transition-all duration-300"
+              style={{ width: `${onboarding.percentComplete}%` }}
+            />
+          </div>
+
+          {/* Interactive Step Rows */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {onboarding.steps.map((step) => {
+              const isNext = onboarding.nextStepId === step.id;
+              return (
+                <button
+                  key={step.id}
+                  type="button"
+                  onClick={() => handleOnboardingStepClick(step.id)}
+                  className={`text-left p-3 rounded-2xl border flex items-center justify-between gap-2.5 cursor-pointer transition-all ${
+                    step.completed
+                      ? "bg-emerald-50/70 dark:bg-emerald-950/25 border-emerald-200 dark:border-emerald-900/60"
+                      : isNext
+                      ? "bg-blue-50/70 dark:bg-blue-950/30 border-blue-400 dark:border-blue-600 shadow-xs"
+                      : "bg-slate-50 dark:bg-slate-900/50 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700"
+                  }`}
+                >
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    {step.completed ? (
+                      <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                    ) : (
+                      <Circle
+                        className={`w-5 h-5 shrink-0 mt-0.5 ${
+                          isNext
+                            ? "text-blue-700 dark:text-blue-400"
+                            : "text-slate-400 dark:text-slate-500"
+                        }`}
+                      />
+                    )}
+                    <div className="min-w-0">
+                      <div
+                        className={`text-xs font-black leading-snug ${
+                          step.completed
+                            ? "text-emerald-900 dark:text-emerald-200 line-through decoration-emerald-500/60"
+                            : "text-slate-900 dark:text-slate-100"
+                        }`}
+                      >
+                        {step.number}. {lang === "te" ? step.titleTe : step.titleEn}
+                      </div>
+                      <p className="text-[11px] text-slate-600 dark:text-slate-400 line-clamp-1 mt-0.5">
+                        {lang === "te" ? step.descTe : step.descEn}
+                      </p>
+                    </div>
+                  </div>
+                  {!step.completed && (
+                    <span
+                      className={`px-2.5 py-1 rounded-xl text-[10px] font-black shrink-0 ${
+                        isNext
+                          ? "bg-[#1E3A8A] text-white"
+                          : "bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700"
+                      }`}
+                    >
+                      {lang === "te" ? step.ctaTe : step.ctaEn}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* Line Operating Days Prompt (asks user whether Specific Days or Daily) */}
+      {!profile.lineDaysConfigured && (
+        <section
+          aria-label={lang === "te" ? "లైన్ రోజుల ఎంపిక" : "Line Schedule Setup"}
+          className="rounded-3xl p-4 sm:p-5 bg-white dark:bg-[#131B2E] border border-sky-200 dark:border-sky-800/70 shadow-sm space-y-3"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <span className="text-[10px] font-black uppercase tracking-wider text-sky-700 dark:text-sky-400">
+                {lang === "te" ? "లైన్ షెడ్యూల్ సెటప్" : "Your Weekly Line Schedule"}
               </span>
-              <h3 className="text-xs sm:text-sm font-black text-slate-900 dark:text-white truncate">
-                {lang === "te" ? "మీ మొదటి గ్రామాన్ని చేర్చండి" : "Add Your First Village & Borrowers"}
-              </h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              <h3 className="text-sm font-black text-slate-900 dark:text-white mt-0.5">
                 {lang === "te"
-                  ? "సోమవారం / మంగళవారం గ్రామాలను జోడించండి"
-                  : "Set up your Monday & Tuesday collection villages"}
-              </p>
+                  ? "మీరు వారంలో ఏ రోజుల్లో లైన్ వసూలు చేస్తారు?"
+                  : "Which days in a week do you run your collection line?"}
+              </h3>
             </div>
           </div>
 
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setScheduleModeDraft("specific")}
+              className={`min-h-[42px] rounded-xl px-3 py-2 text-xs font-extrabold border cursor-pointer transition-all ${
+                scheduleModeDraft === "specific"
+                  ? "bg-sky-700 text-white border-sky-700"
+                  : "bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700"
+              }`}
+            >
+              {lang === "te" ? "ఎంచుకున్న రోజులు" : "Specific Days"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setScheduleModeDraft("daily")}
+              className={`min-h-[42px] rounded-xl px-3 py-2 text-xs font-extrabold border cursor-pointer transition-all ${
+                scheduleModeDraft === "daily"
+                  ? "bg-sky-700 text-white border-sky-700"
+                  : "bg-slate-50 dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700"
+              }`}
+            >
+              {lang === "te" ? "ప్రతి రోజు (Daily)" : "Daily (All 7 Days)"}
+            </button>
+          </div>
+
+          {scheduleModeDraft === "specific" && (
+            <div className="flex flex-wrap gap-1.5">
+              {ALL_DAYS_MON_FIRST.map((day) => {
+                const selected = scheduleDaysDraft.includes(day);
+                return (
+                  <button
+                    key={day}
+                    type="button"
+                    onClick={() => {
+                      setScheduleDaysDraft((prev) =>
+                        prev.includes(day)
+                          ? prev.length > 1
+                            ? prev.filter((d) => d !== day)
+                            : prev
+                          : [...prev, day]
+                      );
+                    }}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border cursor-pointer transition-all ${
+                      selected
+                        ? "bg-amber-500 text-white border-amber-500 shadow-xs"
+                        : "bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700"
+                    }`}
+                  >
+                    {lang === "te" ? translateDayName(day, "te") : day.slice(0, 3)}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           <button
-            onClick={() => onNavigateTab("collect")}
-            className="py-2.5 px-3.5 rounded-xl bg-[#1E3A8A] hover:bg-blue-900 text-white font-extrabold text-xs shrink-0 shadow-md cursor-pointer transition-all active:scale-95"
+            type="button"
+            onClick={() =>
+              onUpdateProfile({
+                ...profile,
+                lineDaysMode: scheduleModeDraft,
+                lineDays:
+                  scheduleModeDraft === "daily"
+                    ? [...ALL_DAYS_MON_FIRST]
+                    : scheduleDaysDraft,
+                lineDaysConfigured: true,
+              })
+            }
+            className="w-full min-h-[42px] rounded-xl bg-sky-700 hover:bg-sky-800 text-white font-black text-xs cursor-pointer transition-all"
           >
-            {lang === "te" ? "+ గ్రామం" : "+ Setup"}
+            {lang === "te" ? "లైన్ రోజులు సేవ్ చేయండి ✓" : "Save Line Days ✓"}
           </button>
-        </div>
-      ) : (
-        <div className="rounded-2xl p-4 bg-gradient-to-r from-amber-500/15 via-amber-500/10 to-transparent border border-amber-300/60 dark:border-amber-700/60 shadow-xs flex items-center justify-between gap-3">
+        </section>
+      )}
+
+      {/* 2-Day Advance WhatsApp Pre-Collection Reminders Alert Card (only when enabled) */}
+      {showWaReminderBanner && (
+        <div className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-amber-300 dark:border-amber-700/60 shadow-sm flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="w-11 h-11 rounded-2xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-md">
+            <div className="w-11 h-11 rounded-2xl bg-amber-500 text-white flex items-center justify-center shrink-0 shadow-sm">
               <Bell className="w-5 h-5" />
             </div>
             <div className="min-w-0">
@@ -480,11 +705,15 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                 </span>
               </div>
               <h3 className="text-xs sm:text-sm font-black text-slate-900 dark:text-white truncate">
-                {advanceInfo.targetDayName} Line (
-                {advanceInfo.matchingVillages.map((v) => v.name).join(", ") || "Upcoming"}
-                )
+                {lang === "te"
+                  ? `${advanceInfo.targetDayName} లైన్ (${
+                      advanceInfo.matchingVillages.map((v) => v.name).join(", ") || "రాబోయే గ్రామాలు"
+                    })`
+                  : `${advanceInfo.targetDayName} Line (${
+                      advanceInfo.matchingVillages.map((v) => v.name).join(", ") || "Upcoming"
+                    })`}
               </h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              <p className="text-[11px] text-slate-600 dark:text-slate-400">
                 {lang === "te"
                   ? "ఖాతాదారులకు వారం వాయిదా వాట్సాప్ రిమైండర్లు పంపండి"
                   : "Send advance WhatsApp collection notices to borrowers"}
@@ -494,7 +723,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
           <button
             onClick={() => setShowReminderCenter(true)}
-            className="py-2.5 px-3.5 rounded-xl bg-[#25D366] hover:bg-[#20bd5a] text-white font-extrabold text-xs flex items-center gap-1.5 shrink-0 shadow-md cursor-pointer transition-all active:scale-95"
+            className="min-h-[44px] py-2 px-3.5 rounded-xl bg-[#25D366] hover:bg-[#20bd5a] text-white font-extrabold text-xs flex items-center gap-1.5 shrink-0 shadow-sm cursor-pointer transition-all active:scale-95"
           >
             <MessageCircle className="w-4 h-4 fill-white" />
             <span>{lang === "te" ? "రిమైండర్లు" : "Send"}</span>
@@ -502,7 +731,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         </div>
       )}
 
-      {/* 3. FINANCE SUMMARY (2x2 Grid) - Adaptive & Premium */}
+      {/* 3. FINANCE SUMMARY & TOOLS (7 uniform cards: 2-col mobile / 4-col desktop Grid) */}
       <div className="space-y-3 pt-1">
         <div className="flex items-center justify-between px-1">
           <h2 className="text-sm font-black text-slate-900 dark:text-slate-100 tracking-tight">
@@ -510,106 +739,202 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           </h2>
           <button
             onClick={() => onNavigateTab("reports")}
-            className="text-xs font-bold text-blue-600 dark:text-blue-400 flex items-center gap-0.5 hover:underline cursor-pointer"
+            className="min-h-[44px] px-2 text-xs font-bold text-blue-700 dark:text-blue-400 flex items-center gap-0.5 hover:underline cursor-pointer"
           >
             <span>{lang === "te" ? "అన్నీ చూడండి" : "View All"}</span>
             <ChevronRight className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        <div className="grid grid-cols-2 gap-3.5">
-          {/* Active Loans */}
-          <div
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+          {/* 1. Active Loans */}
+          <button
+            type="button"
             onClick={() => onNavigateTab("borrowers")}
-            className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm cursor-pointer hover:border-blue-500/50 active:scale-98 transition-all flex flex-col justify-between"
+            className="text-left rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm cursor-pointer hover:border-blue-500/50 active:scale-98 transition-all flex flex-col justify-between"
           >
-            <div className="flex items-center justify-between mb-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+            <div className="flex items-center justify-between mb-3 w-full">
+              <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 flex items-center justify-center">
                 <Wallet className="w-5 h-5" />
               </div>
               <ChevronRight className="w-4 h-4 text-slate-400" />
             </div>
             <div>
-              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase">
+              <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase">
                 {lang === "te" ? "యాక్టివ్ అప్పులు" : "Active Loans"}
               </span>
-              <div className="text-lg font-black text-slate-900 dark:text-slate-100 mt-0.5">
+              <div className="text-lg font-black text-slate-900 dark:text-slate-100 mt-0.5 tabular-nums">
                 {activeCount} {lang === "te" ? "ఖాతాలు" : "Loans"}
               </div>
             </div>
-          </div>
+          </button>
 
-          {/* Line Collections */}
-          <div
+          {/* 2. Line Collections */}
+          <button
+            type="button"
             onClick={() => onNavigateTab("reports")}
-            className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm cursor-pointer hover:border-emerald-500/50 active:scale-98 transition-all flex flex-col justify-between"
+            className="text-left rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm cursor-pointer hover:border-emerald-500/50 active:scale-98 transition-all flex flex-col justify-between"
           >
-            <div className="flex items-center justify-between mb-3">
-              <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+            <div className="flex items-center justify-between mb-3 w-full">
+              <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400 flex items-center justify-center">
                 <BarChart3 className="w-5 h-5" />
               </div>
               <ChevronRight className="w-4 h-4 text-slate-400" />
             </div>
             <div>
-              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase">
+              <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase">
                 {lang === "te" ? "లైన్ వసూళ్లు" : "Line Collections"}
               </span>
-              <div className="text-lg font-black text-emerald-600 dark:text-emerald-400 mt-0.5">
+              <div className="text-lg font-black text-emerald-700 dark:text-emerald-400 mt-0.5 tabular-nums">
                 {formatCurrency(totalCollected)}
               </div>
             </div>
-          </div>
+          </button>
 
-          {/* Unpaid Short Amount */}
-          <div
+          {/* 3. Unpaid Short Amount */}
+          <button
+            type="button"
             onClick={() => onNavigateTab("borrowers")}
-            className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm cursor-pointer hover:border-purple-500/50 active:scale-98 transition-all flex flex-col justify-between"
+            className="text-left rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm cursor-pointer hover:border-purple-500/50 active:scale-98 transition-all flex flex-col justify-between"
           >
-            <div className="flex items-center justify-between mb-3">
-              <div className="w-10 h-10 rounded-xl bg-purple-50 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 flex items-center justify-center">
+            <div className="flex items-center justify-between mb-3 w-full">
+              <div className="w-10 h-10 rounded-xl bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400 flex items-center justify-center">
                 <AlertCircle className="w-5 h-5" />
               </div>
               <ChevronRight className="w-4 h-4 text-slate-400" />
             </div>
             <div>
-              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase">
+              <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase">
                 {lang === "te" ? "తరుగు బ్యాలెన్స్" : "Unpaid Short"}
               </span>
-              <div className="text-lg font-black text-purple-600 dark:text-purple-400 mt-0.5">
+              <div className="text-lg font-black text-purple-700 dark:text-purple-400 mt-0.5 tabular-nums">
                 {formatCurrency(totalShortAmount)}
               </div>
             </div>
-          </div>
+          </button>
 
-          {/* Expenses & Fuel */}
-          <div
+          {/* 4. Expenses & Rent */}
+          <button
+            type="button"
             onClick={() => onNavigateTab("expenses")}
-            className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm cursor-pointer hover:border-amber-500/50 active:scale-98 transition-all flex flex-col justify-between"
+            className="text-left rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm cursor-pointer hover:border-amber-500/50 active:scale-98 transition-all flex flex-col justify-between"
           >
-            <div className="flex items-center justify-between mb-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 flex items-center justify-center">
+            <div className="flex items-center justify-between mb-3 w-full">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 flex items-center justify-center">
                 <PiggyBank className="w-5 h-5" />
               </div>
               <ChevronRight className="w-4 h-4 text-slate-400" />
             </div>
             <div>
-              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase">
+              <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase">
                 {lang === "te" ? "ఖర్చులు & పెట్రోల్" : "Expenses & Rent"}
               </span>
-              <div className="text-lg font-black text-amber-600 dark:text-amber-400 mt-0.5">
+              <div className="text-lg font-black text-amber-700 dark:text-amber-400 mt-0.5 tabular-nums">
                 {formatCurrency(totalExpenses)}
               </div>
             </div>
-          </div>
+          </button>
+
+          {/* 5. Interest Calculator */}
+          <button
+            type="button"
+            onClick={() => onNavigateTab("calc")}
+            className="text-left rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm cursor-pointer hover:border-orange-500/50 active:scale-98 transition-all flex flex-col justify-between"
+          >
+            <div className="flex items-center justify-between mb-3 w-full">
+              <div className="w-10 h-10 rounded-xl bg-orange-50 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 flex items-center justify-center">
+                <Calculator className="w-5 h-5" />
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-400" />
+            </div>
+            <div>
+              <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase">
+                {t.interestCalc}
+              </span>
+              <div className="text-lg font-black text-orange-700 dark:text-orange-400 mt-0.5">
+                {lang === "te" ? "వడ్డీ లెక్క" : "Loan EMI"}
+              </div>
+            </div>
+          </button>
+
+          {/* 6. Line Calendar */}
+          <button
+            type="button"
+            onClick={() => onNavigateTab("calendar")}
+            className="text-left rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm cursor-pointer hover:border-sky-500/50 active:scale-98 transition-all flex flex-col justify-between"
+          >
+            <div className="flex items-center justify-between mb-3 w-full">
+              <div className="w-10 h-10 rounded-xl bg-sky-50 dark:bg-sky-900/30 text-sky-700 dark:text-sky-400 flex items-center justify-center">
+                <Calendar className="w-5 h-5" />
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-400" />
+            </div>
+            <div>
+              <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase">
+                {t.scheduleCalendar}
+              </span>
+              <div className="text-lg font-black text-sky-700 dark:text-sky-400 mt-0.5 tabular-nums">
+                {todayLineVillages.length > 0
+                  ? `${todayLineVillages.length} ${lang === "te" ? "నేటి లైన్" : "Today"}`
+                  : `${data.villages.length} ${lang === "te" ? "గ్రామాలు" : "Villages"}`}
+              </div>
+            </div>
+          </button>
+
+          {/* 7. Daily Cashbook (Hidden when disabled in Settings) */}
+          {profile.enableDailyCashbook !== false && (
+            <button
+              type="button"
+              onClick={() => onNavigateTab("cashbook")}
+              className="text-left rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm cursor-pointer hover:border-teal-500/50 active:scale-98 transition-all flex flex-col justify-between"
+            >
+              <div className="flex items-center justify-between mb-3 w-full">
+                <div className="w-10 h-10 rounded-xl bg-teal-50 dark:bg-teal-900/30 text-teal-700 dark:text-teal-400 flex items-center justify-center">
+                  <BookOpen className="w-5 h-5" />
+                </div>
+                <ChevronRight className="w-4 h-4 text-slate-400" />
+              </div>
+              <div>
+                <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase">
+                  {t.dailyCashbook}
+                </span>
+                <div className="text-lg font-black text-teal-700 dark:text-teal-400 mt-0.5 tabular-nums">
+                  {showBalance ? formatCurrency(lineBagCash) : "₹ •••••"}
+                </div>
+              </div>
+            </button>
+          )}
+
+          {/* 8. Record Book (Under Line Calendar in 2-col mobile grid) */}
+          <button
+            type="button"
+            onClick={() => onNavigateTab("reports", undefined, "recordBook")}
+            className="text-left rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm cursor-pointer hover:border-indigo-500/50 active:scale-98 transition-all flex flex-col justify-between"
+          >
+            <div className="flex items-center justify-between mb-3 w-full">
+              <div className="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 flex items-center justify-center">
+                <ClipboardList className="w-5 h-5" />
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-400" />
+            </div>
+            <div>
+              <span className="text-[11px] font-bold text-slate-600 dark:text-slate-400 uppercase">
+                {t.recordBook}
+              </span>
+              <div className="text-xs sm:text-sm font-black text-indigo-700 dark:text-indigo-400 mt-1">
+                {lang === "te" ? "వారం · నెల · సైకిల్" : "Weekly · Monthly · Cycle"}
+              </div>
+            </div>
+          </button>
         </div>
       </div>
 
       {/* 4. Today's Scheduled Line Villages Alert */}
       {todayLineVillages.length > 0 && (
-        <div className="rounded-2xl p-4 bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent border border-amber-500/30">
+        <div className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-amber-300 dark:border-amber-700/50 shadow-sm">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-full bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold text-sm">
+              <div className="w-9 h-9 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 flex items-center justify-center font-bold text-sm">
                 📍
               </div>
               <div>
@@ -623,7 +948,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </div>
             <button
               onClick={() => onNavigateTab("collect")}
-              className="px-3.5 py-1.5 rounded-full bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold cursor-pointer shadow-sm active:scale-95 transition-all"
+              className="min-h-[44px] px-4 py-1.5 rounded-full bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold cursor-pointer shadow-sm active:scale-95 transition-all"
             >
               {lang === "te" ? "ప్రారంభించు" : "Start"}
             </button>
@@ -638,7 +963,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             {lang === "te" ? "పూర్తయిన వారాల రికార్డులు" : "Completed Weeks on Line"}
           </h2>
 
-          <div className="space-y-2.5">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
             {allMondays.slice(0, 4).map((monday, i) => {
               const weekDates = getWeekDates(monday);
               const weekColls = Object.values(collections).filter((c) =>
@@ -648,20 +973,21 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               const weekNumber = allMondays.length - i;
 
               return (
-                <div
+                <button
+                  type="button"
                   key={monday}
                   onClick={() => setSelectedWeekDetail(monday)}
-                  className="rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between cursor-pointer hover:border-blue-500/40 active:scale-99 transition-all"
+                  className="w-full text-left rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between cursor-pointer hover:border-blue-500/40 active:scale-99 transition-all"
                 >
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 font-black text-sm text-blue-600 dark:text-blue-400 flex items-center justify-center">
+                    <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 font-black text-sm text-blue-700 dark:text-blue-400 flex items-center justify-center tabular-nums">
                       W{weekNumber}
                     </div>
                     <div>
                       <div className="text-sm font-bold text-slate-900 dark:text-slate-100">
                         {lang === "te" ? `వారం ${weekNumber}` : `Week ${weekNumber}`}
                       </div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
+                      <div className="text-[11px] text-slate-600 dark:text-slate-400 font-medium">
                         {formatDateIN(monday, lang)} → {formatDateIN(weekDates[6], lang)}
                       </div>
                     </div>
@@ -669,16 +995,16 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
                   <div className="text-right flex items-center gap-2">
                     <div>
-                      <div className="text-sm font-black text-emerald-600 dark:text-emerald-400">
+                      <div className="text-sm font-black text-emerald-700 dark:text-emerald-400 tabular-nums">
                         {formatCurrency(wColl)}
                       </div>
-                      <div className="text-[10px] text-slate-400">
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400">
                         {weekColls.length} {lang === "te" ? "గ్రామాలు" : "visits"}
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-slate-400" />
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>

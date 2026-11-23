@@ -8,8 +8,9 @@ import { BorrowersTab } from "./components/BorrowersTab";
 import { ReportsTab } from "./components/ReportsTab";
 import { CalendarTab } from "./components/CalendarTab";
 import { CalculatorTab } from "./components/CalculatorTab";
+import { CashbookTab } from "./components/CashbookTab";
 import { ExpensesTab } from "./components/ExpensesTab";
-import { SettingsTab } from "./components/SettingsTab";
+import { SettingsTab, SettingsSection } from "./components/SettingsTab";
 
 import {
   Borrower,
@@ -18,6 +19,7 @@ import {
   ExpenseItem,
   NewLoanLogItem,
   PersonalUseItem,
+  CashOpeningMap,
   BusinessProfile,
   Language,
   ThemeMode,
@@ -30,8 +32,25 @@ import {
   clearAllAppData,
 } from "./utils/storage";
 import { getTodayStr } from "./utils/dateUtils";
-import { checkAndAutoBackup } from "./services/firebaseBackup";
+import {
+  PaidOrFreePlanId,
+  applyActivationToProfile,
+  applyCloudLicenseToProfile,
+  evaluateSubscriptionAccess,
+  getOrCreateDeviceId,
+  isOwnerAdminEmail,
+} from "./utils/licenseUtils";
+import {
+  GoogleVaultUser,
+  checkAndAutoBackup,
+  checkMyCloudLicense,
+  getCurrentGoogleUser,
+  signInWithGoogle,
+  signOutGoogle,
+  subscribeAuthState,
+} from "./services/firebaseBackup";
 import { OfflineIndicator } from "./components/OfflineIndicator";
+import { SubscriptionPaywall } from "./components/SubscriptionPaywall";
 
 interface ToastState {
   msg: string;
@@ -66,6 +85,10 @@ export default function App() {
     DB.get(STORAGE_KEYS.PERSONAL, [])
   );
 
+  const [openingBalances, setOpeningBalances] = useState<CashOpeningMap>(() =>
+    DB.get(STORAGE_KEYS.CASH_OPENING, {})
+  );
+
   const [profile, setProfile] = useState<BusinessProfile>(() =>
     DB.get(STORAGE_KEYS.PROFILE, DEFAULT_PROFILE)
   );
@@ -78,8 +101,54 @@ export default function App() {
     DB.get(STORAGE_KEYS.THEME, "light")
   );
 
+  const [deviceId] = useState<string>(() => getOrCreateDeviceId());
+  const [googleUser, setGoogleUser] = useState<GoogleVaultUser | null>(() =>
+    getCurrentGoogleUser()
+  );
+  const [googleSigningIn, setGoogleSigningIn] = useState(false);
+  const [checkingCloudLicense, setCheckingCloudLicense] = useState(false);
+  const [settingsSectionReq, setSettingsSectionReq] = useState<{
+    section: SettingsSection;
+    nonce: number;
+  } | null>(null);
+  const [reportsViewReq, setReportsViewReq] = useState<{
+    view: "summary" | "recordBook" | "weeks" | "villages";
+    nonce: number;
+  } | null>(null);
+  const [hasBackup, setHasBackup] = useState<boolean>(() => {
+    try {
+      return Boolean(
+        localStorage.getItem("slg_last_cloud_backup") ||
+          localStorage.getItem("slg_local_backup_at") ||
+          getCurrentGoogleUser()
+      );
+    } catch {
+      return false;
+    }
+  });
+
   // Toast notification
   const [toast, setToast] = useState<ToastState | null>(null);
+
+  const navigateToTab = (
+    targetTab: TabType,
+    settingsSection?: SettingsSection,
+    reportsView?: "summary" | "recordBook" | "weeks" | "villages"
+  ) => {
+    setTab(targetTab);
+    if (targetTab === "settings") {
+      setSettingsSectionReq({
+        section: settingsSection || "main",
+        nonce: Date.now(),
+      });
+    }
+    if (targetTab === "reports") {
+      setReportsViewReq({
+        view: reportsView || "summary",
+        nonce: Date.now(),
+      });
+    }
+  };
 
   const showToast = (
     msg: string,
@@ -111,12 +180,124 @@ export default function App() {
     };
   }, [unlocked]);
 
-  // Auto-backup to Firebase Cloud on app unlock / session start
+  // Subscribe to Firebase Google Auth state
+  useEffect(() => {
+    const unsubscribe = subscribeAuthState((user) => {
+      setGoogleUser(user);
+      if (user) {
+        setHasBackup(true);
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  // Check Firestore /licenses whenever a verified non-admin Google user signs in
+  const handleCheckCloudLicense = async (silent = false) => {
+    if (!googleUser?.emailVerified) return;
+    if (isOwnerAdminEmail(googleUser.email, googleUser.emailVerified)) return;
+    setCheckingCloudLicense(true);
+    try {
+      const cloudLic = await checkMyCloudLicense(deviceId);
+      if (cloudLic) {
+        setProfile((prev) => {
+          const next = applyCloudLicenseToProfile(prev, cloudLic, deviceId);
+          DB.set(STORAGE_KEYS.PROFILE, next);
+          return next;
+        });
+        if (!silent) {
+          showToast(
+            cloudLic.status === "revoked"
+              ? lang === "te"
+                ? "లైసెన్స్ నిలిపివేయబడింది"
+                : "License suspended by admin"
+              : lang === "te"
+              ? "క్లౌడ్ సబ్‌స్క్రిప్షన్ ధృవీకరించబడింది ✓"
+              : "Cloud subscription verified ✓",
+            cloudLic.status === "revoked" ? "error" : "success"
+          );
+        }
+      } else if (!silent) {
+        showToast(
+          lang === "te"
+            ? "ఈ Google ఖాతాకు యాక్టివ్ సబ్‌స్క్రిప్షన్ లేదు"
+            : "No active cloud license found for this email yet",
+          "info"
+        );
+      }
+    } catch (err) {
+      console.warn("Cloud license check failed:", err);
+      if (!silent) {
+        showToast(
+          lang === "te" ? "క్లౌడ్ లైసెన్స్ తనిఖీ విఫలమైంది" : "Could not check cloud license",
+          "error"
+        );
+      }
+    } finally {
+      setCheckingCloudLicense(false);
+    }
+  };
+
+  useEffect(() => {
+    if (googleUser?.emailVerified && !isOwnerAdminEmail(googleUser.email, googleUser.emailVerified)) {
+      void handleCheckCloudLicense(true);
+    }
+  }, [googleUser?.uid, googleUser?.emailVerified]);
+
+  const handlePaywallGoogleSignIn = async () => {
+    setGoogleSigningIn(true);
+    try {
+      const res = await signInWithGoogle();
+      if (res.success && res.user) {
+        setGoogleUser(res.user);
+        showToast(res.message, "success");
+      } else {
+        showToast(res.message, "error");
+      }
+    } finally {
+      setGoogleSigningIn(false);
+    }
+  };
+
+  const handlePaywallGoogleSignOut = async () => {
+    await signOutGoogle();
+    setGoogleUser(null);
+    showToast(lang === "te" ? "లాగ్‌అవుట్ అయింది" : "Signed out", "info");
+  };
+
+  const handleActivateKeySuccess = (params: {
+    plan: PaidOrFreePlanId;
+    expiresAt: string;
+    licenseKey: string;
+  }) => {
+    const nextProfile = applyActivationToProfile(profile, {
+      plan: params.plan,
+      expiresAt: params.expiresAt,
+      licenseKey: params.licenseKey,
+      deviceId,
+      activatedBy: "activation_key",
+    });
+    handleUpdateProfile(nextProfile);
+    showToast(
+      lang === "te"
+        ? `యాక్టివేట్ అయింది! (${params.expiresAt} వరకు) ✓`
+        : `Subscription Activated until ${params.expiresAt} ✓`,
+      "success"
+    );
+  };
+
+  // Auto-backup to Firebase Cloud on app unlock / session start (only when subscribed)
   useEffect(() => {
     if (unlocked) {
-      checkAndAutoBackup();
+      const accessNow = evaluateSubscriptionAccess({
+        profile,
+        userEmail: googleUser?.email,
+        emailVerified: googleUser?.emailVerified,
+      });
+      if (accessNow.allowed) {
+        checkAndAutoBackup();
+      }
     }
-  }, [unlocked]);
+  }, [unlocked, profile.subscriptionStatus, googleUser?.uid]);
 
   // Update Handlers that persist to storage
   const handleUpdateData = (newData: {
@@ -203,12 +384,56 @@ export default function App() {
     showToast(lang === "te" ? "ఖర్చు తొలగించబడింది" : "Expense deleted", "info");
   };
 
-  // Auto-clean strictly untouched preview seed data so new installs start completely clean
+  const handleUpdateOpeningBalance = (dateStr: string, amount: number) => {
+    const next = { ...openingBalances, [dateStr]: amount };
+    setOpeningBalances(next);
+    DB.set(STORAGE_KEYS.CASH_OPENING, next);
+    showToast(
+      lang === "te" ? "ప్రారంభ నగదు సేవ్ అయింది ✓" : "Opening bag cash updated ✓",
+      "success"
+    );
+  };
+
+  // Auto-clean strictly untouched preview seed data AND grandfather pre-SaaS existing real ledgers (Dad's live app)
   useEffect(() => {
+    let wasDemo = false;
     if (isUntouchedDemoData(data, collections, expenses, newLoansLog, personalLog)) {
+      wasDemo = true;
       const emptyLedger = { villages: [], borrowers: {} };
       setData(emptyLedger);
       DB.set(STORAGE_KEYS.DATA, emptyLedger);
+    }
+
+    if (!profile.subscriptionStatus) {
+      const hasExistingRealData =
+        !wasDemo &&
+        (Object.values(data.borrowers || {}).flat().length > 0 ||
+          Object.keys(collections || {}).length > 0 ||
+          (expenses || []).length > 0);
+
+      if (hasExistingRealData) {
+        // Grandfather pre-existing live lender data (e.g., Dad's phone) as Lifetime Free Family Pass
+        const grandfathered = applyActivationToProfile(profile, {
+          plan: "lifetime_free",
+          expiresAt: "2099-12-31",
+          licenseKey: "LEGACY-FAMILY-FREE",
+          deviceId,
+          activatedBy: "legacy_family",
+        });
+        setProfile(grandfathered);
+        DB.set(STORAGE_KEYS.PROFILE, grandfathered);
+      } else {
+        // Explicitly lock new / empty installs until subscribed or activated
+        const lockedProfile: BusinessProfile = {
+          ...profile,
+          subscriptionPlan: "unsubscribed",
+          subscriptionStatus: "unsubscribed",
+          subscriptionExpiresAt: "",
+          deviceId,
+        };
+        setProfile(lockedProfile);
+        DB.set(STORAGE_KEYS.PROFILE, lockedProfile);
+      }
     }
   }, []);
 
@@ -220,6 +445,8 @@ export default function App() {
     setExpenses([]);
     setNewLoansLog([]);
     setPersonalLog([]);
+    setOpeningBalances({});
+    setHasBackup(Boolean(googleUser));
     if (options.includeProfileAndPin) {
       setProfile(DEFAULT_PROFILE);
       setPin("1234");
@@ -241,7 +468,7 @@ export default function App() {
     }
   }, [theme]);
 
-  // 1. PIN Lock Screen (Matching Image 2 Right Pane)
+  // 1. PIN Lock Screen
   if (!unlocked) {
     return (
       <PinScreen
@@ -257,7 +484,54 @@ export default function App() {
     );
   }
 
-  // 2. Unlocked App Shell (Soft Neumorphic Luxury Fintech Layout)
+  // 2. Hard SaaS Subscription Gate — NO operational function works until subscribed or Owner Admin signed in
+  const subscriptionAccess = evaluateSubscriptionAccess({
+    profile,
+    userEmail: googleUser?.email,
+    emailVerified: googleUser?.emailVerified,
+  });
+
+  if (!subscriptionAccess.allowed) {
+    return (
+      <>
+        {toast && (
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 pointer-events-none print:hidden">
+            <div
+              className={`px-4 py-2 rounded-full font-bold text-xs shadow-xl text-white flex items-center gap-1.5 whitespace-nowrap ${
+                toast.type === "success"
+                  ? "bg-emerald-600 shadow-emerald-900/30"
+                  : toast.type === "error"
+                  ? "bg-rose-600 shadow-rose-900/30"
+                  : "bg-[#1E3A8A] shadow-blue-900/30"
+              }`}
+            >
+              <span>{toast.msg}</span>
+            </div>
+          </div>
+        )}
+        <SubscriptionPaywall
+          profile={profile}
+          deviceId={deviceId}
+          access={subscriptionAccess}
+          lang={lang}
+          theme={theme}
+          googleUser={googleUser}
+          googleSigningIn={googleSigningIn}
+          checkingCloudLicense={checkingCloudLicense}
+          onToggleLang={handleToggleLang}
+          onToggleTheme={handleToggleTheme}
+          onLock={() => setUnlocked(false)}
+          onActivateKeySuccess={handleActivateKeySuccess}
+          onGoogleSignIn={handlePaywallGoogleSignIn}
+          onGoogleSignOut={handlePaywallGoogleSignOut}
+          onCheckCloudLicense={() => handleCheckCloudLicense(false)}
+          showToast={showToast}
+        />
+      </>
+    );
+  }
+
+  // 3. Unlocked & Subscribed App Shell (Soft Neumorphic Luxury Fintech Layout)
   return (
     <div
       className={`min-h-screen font-sans flex flex-col justify-between selection:bg-amber-400 selection:text-slate-950 transition-colors ${
@@ -266,9 +540,9 @@ export default function App() {
     >
       {/* Toast Alert */}
       {toast && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none animate-in fade-in slide-in-from-top-4 duration-200">
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 pointer-events-none animate-in fade-in slide-in-from-bottom-4 duration-200 print:hidden">
           <div
-            className={`px-4 py-2.5 rounded-full font-bold text-xs shadow-xl text-white flex items-center gap-1.5 ${
+            className={`px-4 py-2 rounded-full font-bold text-xs shadow-xl text-white flex items-center gap-1.5 whitespace-nowrap ${
               toast.type === "success"
                 ? "bg-emerald-600 shadow-emerald-900/30"
                 : toast.type === "error"
@@ -282,7 +556,9 @@ export default function App() {
       )}
 
       {/* Offline Village Mode Status Bar */}
-      <OfflineIndicator lang={lang} />
+      <div className="print:hidden">
+        <OfflineIndicator lang={lang} />
+      </div>
 
       {/* Main Top Header with Universal Back Button when outside Home */}
       <HeaderNav
@@ -309,6 +585,10 @@ export default function App() {
             ? lang === "te"
               ? "క్యాలిక్యులేటర్"
               : "Calculator"
+            : tab === "cashbook"
+            ? lang === "te"
+              ? "రోజువారీ క్యాష్‌బుక్"
+              : "Daily Cashbook"
             : tab === "expenses"
             ? lang === "te"
               ? "లైన్ ఖర్చులు"
@@ -331,7 +611,7 @@ export default function App() {
       />
 
       {/* Tab Screen Router */}
-      <main className="flex-1 w-full max-w-lg mx-auto">
+      <main className="flex-1 w-full max-w-lg md:max-w-3xl lg:max-w-5xl mx-auto">
         {tab === "home" && (
           <HomeTab
             data={data}
@@ -340,10 +620,12 @@ export default function App() {
             newLoansLog={newLoansLog}
             personalLog={personalLog}
             profile={profile}
+            hasBackup={hasBackup}
             lang={lang}
             theme={theme}
-            onNavigateTab={setTab}
+            onNavigateTab={navigateToTab}
             onRecordPersonalUse={handleRecordPersonalUse}
+            onUpdateProfile={handleUpdateProfile}
           />
         )}
 
@@ -361,7 +643,15 @@ export default function App() {
         )}
 
         {tab === "borrowers" && (
-          <BorrowersTab data={data} profile={profile} lang={lang} />
+          <BorrowersTab
+            data={data}
+            profile={profile}
+            lang={lang}
+            onUpdateData={handleUpdateData}
+            onAddNewLoanLog={handleAddNewLoanLog}
+            onNavigateCollect={() => setTab("collect")}
+            showToast={showToast}
+          />
         )}
 
         {tab === "reports" && (
@@ -370,15 +660,46 @@ export default function App() {
             collections={collections}
             expenses={expenses}
             personalLog={personalLog}
+            newLoansLog={newLoansLog}
+            openingBalances={openingBalances}
+            profile={profile}
+            requestedView={reportsViewReq}
+            onUpdateProfile={handleUpdateProfile}
             lang={lang}
+            onNavigateTab={setTab}
+            showToast={showToast}
           />
         )}
 
         {tab === "calendar" && (
-          <CalendarTab collections={collections} lang={lang} />
+          <CalendarTab
+            data={data}
+            collections={collections}
+            expenses={expenses}
+            newLoansLog={newLoansLog}
+            personalLog={personalLog}
+            profile={profile}
+            lang={lang}
+            onNavigateTab={setTab}
+          />
         )}
 
-        {tab === "calc" && <CalculatorTab />}
+        {tab === "calc" && <CalculatorTab lang={lang} />}
+
+        {tab === "cashbook" && (
+          <CashbookTab
+            collections={collections}
+            expenses={expenses}
+            newLoansLog={newLoansLog}
+            personalLog={personalLog}
+            openingBalances={openingBalances}
+            onUpdateOpeningBalance={handleUpdateOpeningBalance}
+            profile={profile}
+            onUpdateProfile={handleUpdateProfile}
+            lang={lang}
+            showToast={showToast}
+          />
+        )}
 
         {tab === "expenses" && (
           <ExpensesTab
@@ -397,6 +718,9 @@ export default function App() {
             onUpdateData={handleUpdateData}
             profile={profile}
             onUpdateProfile={handleUpdateProfile}
+            deviceId={deviceId}
+            requestedSection={settingsSectionReq}
+            onBackupRecorded={() => setHasBackup(true)}
             lang={lang}
             theme={theme}
             onToggleLang={handleToggleLang}
