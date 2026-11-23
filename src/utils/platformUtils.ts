@@ -13,6 +13,63 @@ export function isNativeAndroidApk(): boolean {
   }
 }
 
+export interface BiometricAvailabilityResult {
+  available: boolean;
+  status: "AVAILABLE" | "NONE_ENROLLED" | "NOT_AVAILABLE" | "UNAVAILABLE";
+}
+
+interface BiometricUnlockNativePlugin {
+  checkAvailability(): Promise<BiometricAvailabilityResult>;
+  authenticate(options: {
+    title?: string;
+    subtitle?: string;
+    negativeButtonText?: string;
+  }): Promise<{ verified: boolean }>;
+}
+
+const BiometricUnlock =
+  Capacitor.registerPlugin<BiometricUnlockNativePlugin>("BiometricUnlock");
+
+export async function checkNativeBiometricAvailability(): Promise<BiometricAvailabilityResult> {
+  if (!isNativeAndroidApk()) {
+    return { available: false, status: "NOT_AVAILABLE" };
+  }
+  try {
+    const res = await BiometricUnlock.checkAvailability();
+    return {
+      available: Boolean(res?.available),
+      status: res?.status || "UNAVAILABLE",
+    };
+  } catch {
+    return { available: false, status: "UNAVAILABLE" };
+  }
+}
+
+export async function authenticateNativeBiometric(options: {
+  title: string;
+  subtitle: string;
+  negativeButtonText: string;
+}): Promise<{ verified: boolean; code?: string; message?: string }> {
+  if (!isNativeAndroidApk()) {
+    return {
+      verified: false,
+      code: "NOT_AVAILABLE",
+      message: "Native biometrics require Android APK",
+    };
+  }
+  try {
+    const res = await BiometricUnlock.authenticate(options);
+    return { verified: Boolean(res?.verified) };
+  } catch (err: any) {
+    const code = typeof err?.code === "string" ? err.code : "AUTH_FAILED";
+    const message =
+      typeof err?.message === "string"
+        ? err.message
+        : "Biometric verification failed";
+    return { verified: false, code, message };
+  }
+}
+
 export interface SaveTextFileOptions {
   filename: string;
   content: string;

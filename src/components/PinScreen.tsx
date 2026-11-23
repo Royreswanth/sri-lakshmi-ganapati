@@ -11,6 +11,11 @@ import {
 import { Language, EmblemType } from "../types";
 import { translations } from "../translations";
 import { BusinessEmblem } from "./BusinessEmblem";
+import {
+  isNativeAndroidApk,
+  checkNativeBiometricAvailability,
+  authenticateNativeBiometric,
+} from "../utils/platformUtils";
 
 interface PinScreenProps {
   storedPin: string;
@@ -39,17 +44,17 @@ export const PinScreen: React.FC<PinScreenProps> = ({
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [hasWebAuthnSupport, setHasWebAuthnSupport] = useState(false);
 
-  // 5-Attempt Security Lockout Protection
+  // 5-Attempt Security Lockout Protection (persisted across reloads in localStorage)
   const [failedAttempts, setFailedAttempts] = useState<number>(() => {
     try {
-      return parseInt(sessionStorage.getItem("slg_pin_fails") || "0", 10);
+      return parseInt(localStorage.getItem("slg_pin_fails") || "0", 10);
     } catch {
       return 0;
     }
   });
   const [lockoutUntil, setLockoutUntil] = useState<number>(() => {
     try {
-      return parseInt(sessionStorage.getItem("slg_pin_lockout") || "0", 10);
+      return parseInt(localStorage.getItem("slg_pin_lockout") || "0", 10);
     } catch {
       return 0;
     }
@@ -72,12 +77,18 @@ export const PinScreen: React.FC<PinScreenProps> = ({
 
   const t = translations[lang];
 
-  // Detect whether the device/browser physically supports platform biometric credentials
+  // Detect whether native APK biometric hardware or browser WebAuthn platform sensor is available
   useEffect(() => {
     let isMounted = true;
     const checkSupport = async () => {
       try {
+        if (isNativeAndroidApk()) {
+          const nativeRes = await checkNativeBiometricAvailability();
+          if (isMounted) setHasWebAuthnSupport(nativeRes.available);
+          return;
+        }
         if (
+          window.isSecureContext &&
           window.PublicKeyCredential &&
           typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === "function"
         ) {
@@ -90,7 +101,7 @@ export const PinScreen: React.FC<PinScreenProps> = ({
         if (isMounted) setHasWebAuthnSupport(false);
       }
     };
-    checkSupport();
+    void checkSupport();
     return () => {
       isMounted = false;
     };
@@ -155,19 +166,40 @@ export const PinScreen: React.FC<PinScreenProps> = ({
     }
   };
 
-  // TRUE MOBILE HARDWARE BIOMETRICS (WebAuthn / Android Fingerprint / iOS TouchID & FaceID)
+  // TRUE MOBILE HARDWARE BIOMETRICS (Native Android BiometricPrompt inside APK + WebAuthn on HTTPS Chrome)
   const triggerMobileFingerprint = async () => {
-    if (isAuthenticating) return;
+    if (isAuthenticating || remainingLockout > 0) return;
     setIsAuthenticating(true);
     setErr("");
     playAudio("touch");
 
     try {
-      if (!window.PublicKeyCredential) {
+      // Path 1: Standalone Android APK -> genuine OS BiometricPrompt via Capacitor plugin
+      if (isNativeAndroidApk()) {
+        const res = await authenticateNativeBiometric({
+          title: businessName || "LineBook Pro",
+          subtitle:
+            lang === "te"
+              ? "లాక్ తెరవడానికి మీ వేలిముద్రను తాకండి"
+              : "Touch your phone fingerprint sensor to unlock",
+          negativeButtonText: lang === "te" ? "పిన్ వాడండి" : "Use 4-Digit PIN",
+        });
+
+        if (res.verified) {
+          handleBiometricSuccess();
+          return;
+        }
+
+        const errWithCode = new Error(res.code || "AUTH_FAILED");
+        errWithCode.name = res.code || "AUTH_FAILED";
+        throw errWithCode;
+      }
+
+      // Path 2: HTTPS Web Browser / Vercel PWA -> WebAuthn Platform Authenticator
+      if (!window.isSecureContext || !window.PublicKeyCredential) {
         throw new Error("NOT_SUPPORTED");
       }
 
-      // Check if platform authenticator (mobile fingerprint reader) is physically present
       const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
       if (!available) {
         throw new Error("NOT_AVAILABLE");
@@ -177,14 +209,13 @@ export const PinScreen: React.FC<PinScreenProps> = ({
       const challenge = crypto.getRandomValues(new Uint8Array(32));
 
       if (storedCredId) {
-        // Authenticate using the lender's previously registered mobile device credential
         try {
           const rawId = Uint8Array.from(atob(storedCredId), (c) => c.charCodeAt(0));
           const assertion = await navigator.credentials.get({
             publicKey: {
               challenge,
               timeout: 60000,
-              userVerification: "required", // STRICTLY requires user biometric / screen verification
+              userVerification: "required",
               allowCredentials: [
                 {
                   type: "public-key",
@@ -200,7 +231,6 @@ export const PinScreen: React.FC<PinScreenProps> = ({
             return;
           }
         } catch (getErr: any) {
-          // If the prompt was cancelled by user, stop and do NOT fall through to registration
           if (getErr?.name === "NotAllowedError" || getErr?.name === "AbortError") {
             throw getErr;
           }
@@ -208,13 +238,13 @@ export const PinScreen: React.FC<PinScreenProps> = ({
         }
       }
 
-      // First-time biometric registration on this phone (brings up Android / iOS system fingerprint prompt)
       const userId = crypto.getRandomValues(new Uint8Array(16));
       const credential = (await navigator.credentials.create({
         publicKey: {
           challenge,
           rp: {
             name: businessName || "LineBook Pro",
+            ...(window.location.hostname ? { id: window.location.hostname } : {}),
           },
           user: {
             id: userId,
@@ -222,12 +252,12 @@ export const PinScreen: React.FC<PinScreenProps> = ({
             displayName: businessName || "Line Lender",
           },
           pubKeyCredParams: [
-            { type: "public-key", alg: -7 },   // ES256
-            { type: "public-key", alg: -257 }, // RS256
+            { type: "public-key", alg: -7 },
+            { type: "public-key", alg: -257 },
           ],
           authenticatorSelection: {
-            authenticatorAttachment: "platform", // Enforces device fingerprint / FaceID / screen lock
-            userVerification: "required",        // Strictly requires biometric check
+            authenticatorAttachment: "platform",
+            userVerification: "required",
             requireResidentKey: false,
           },
           timeout: 60000,
@@ -254,17 +284,42 @@ export const PinScreen: React.FC<PinScreenProps> = ({
       setShake(true);
       setTimeout(() => setShake(false), 450);
 
-      if (error?.name === "NotAllowedError" || error?.name === "AbortError") {
+      if (
+        error?.name === "NotAllowedError" ||
+        error?.name === "AbortError" ||
+        error?.name === "USER_CANCELLED" ||
+        error?.message === "USER_CANCELLED"
+      ) {
         setErr(
           lang === "te"
             ? "వేలిముద్ర రద్దు చేయబడింది. దయచేసి 4-అంకెల పిన్ నమోదు చేయండి."
             : "Mobile fingerprint cancelled. Please enter your 4-digit PIN."
         );
-      } else if (error?.message === "NOT_SUPPORTED" || error?.message === "NOT_AVAILABLE") {
+      } else if (error?.name === "NONE_ENROLLED" || error?.message === "NONE_ENROLLED") {
         setErr(
           lang === "te"
-            ? "ఈ బ్రౌజర్‌లో మొబైల్ వేలిముద్ర సెన్సార్ అందుబాటులో లేదు. 4-అంకెల పిన్ వాడండి."
-            : "Mobile biometric hardware unavailable in this browser. Use 4-digit PIN."
+            ? "ఫోన్ సెట్టింగ్స్‌లో వేలిముద్ర ఇంకా సెట్ చేయబడలేదు. దయచేసి 4-అంకెల పిన్ వాడండి లేదా ఫోన్ సెక్యూరిటీలో ఫింగర్‌ప్రింట్ జోడించండి."
+            : "No fingerprint set up in Phone Settings. Use 4-digit PIN or add fingerprint in phone Security."
+        );
+      } else if (error?.name === "LOCKOUT" || error?.message === "LOCKOUT") {
+        setErr(
+          lang === "te"
+            ? "ఫోన్ వేలిముద్ర సెన్సార్ తాత్కాలికంగా లాక్ అయింది. దయచేసి 4-అంకెల పిన్ నమోదు చేయండి."
+            : "Fingerprint locked by device after multiple tries. Use your 4-digit PIN."
+        );
+      } else if (
+        error?.message === "NOT_SUPPORTED" ||
+        error?.message === "NOT_AVAILABLE" ||
+        error?.name === "NOT_AVAILABLE"
+      ) {
+        setErr(
+          lang === "te"
+            ? isNativeAndroidApk()
+              ? "ఈ ఫోన్‌లో బయోమెట్రిక్ సెన్సార్ అందుబాటులో లేదు. 4-అంకెల పిన్ వాడండి."
+              : "ఈ బ్రౌజర్‌లో వేలిముద్ర సెన్సార్ అందుబాటులో లేదు. 4-అంకెల పిన్ వాడండి."
+            : isNativeAndroidApk()
+            ? "No biometric hardware available on this device. Use 4-digit PIN."
+            : "Mobile biometric unavailable in this browser (requires HTTPS Chrome or Android APK). Use 4-digit PIN."
         );
       } else {
         setErr(
@@ -276,8 +331,14 @@ export const PinScreen: React.FC<PinScreenProps> = ({
     }
   };
 
-  // Called ONLY when the mobile operating system confirms verified fingerprint
+  // Called ONLY when Android OS BiometricPrompt or browser WebAuthn verifies biometric
   const handleBiometricSuccess = () => {
+    try {
+      localStorage.removeItem("slg_pin_fails");
+      localStorage.removeItem("slg_pin_lockout");
+    } catch {}
+    setFailedAttempts(0);
+    setRemainingLockout(0);
     setIsAuthenticating(false);
     playAudio("success");
     if (navigator.vibrate) navigator.vibrate([40, 80, 120]);
@@ -309,8 +370,8 @@ export const PinScreen: React.FC<PinScreenProps> = ({
       setTimeout(() => {
         if (np === storedPin) {
           try {
-            sessionStorage.removeItem("slg_pin_fails");
-            sessionStorage.removeItem("slg_pin_lockout");
+            localStorage.removeItem("slg_pin_fails");
+            localStorage.removeItem("slg_pin_lockout");
           } catch {}
           setFailedAttempts(0);
           setRemainingLockout(0);
@@ -320,7 +381,7 @@ export const PinScreen: React.FC<PinScreenProps> = ({
           const newFails = failedAttempts + 1;
           setFailedAttempts(newFails);
           try {
-            sessionStorage.setItem("slg_pin_fails", String(newFails));
+            localStorage.setItem("slg_pin_fails", String(newFails));
           } catch {}
 
           setShake(true);
@@ -334,8 +395,8 @@ export const PinScreen: React.FC<PinScreenProps> = ({
             setLockoutUntil(until);
             setRemainingLockout(30);
             try {
-              sessionStorage.setItem("slg_pin_lockout", String(until));
-              sessionStorage.setItem("slg_pin_fails", "0");
+              localStorage.setItem("slg_pin_lockout", String(until));
+              localStorage.setItem("slg_pin_fails", "0");
             } catch {}
             setFailedAttempts(0);
             setErr(

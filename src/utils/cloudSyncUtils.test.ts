@@ -7,6 +7,7 @@ import {
   clampNumber,
   clipString,
   estimateJsonBytes,
+  formatGoogleSignInError,
   sanitizeForFirestore,
 } from "./cloudSyncUtils";
 import type { BackupPayload } from "./storage";
@@ -66,3 +67,28 @@ test("clipString and clampNumber enforce blueprint max lengths and numeric bound
   assert.equal(clampNumber(9999, 0, BLUEPRINT_LIMITS.MAX_VILLAGES), 500);
   assert.ok(estimateJsonBytes({ hello: "world" }) > 10);
 });
+
+test("formatGoogleSignInError surfaces unauthorized hostname and handles auth error codes", () => {
+  const unauth = formatGoogleSignInError({
+    code: "auth/unauthorized-domain",
+    hostname: "sri-lakshmi-ganapati-pi.vercel.app",
+  });
+  assert.equal(unauth.unauthorizedDomain, "sri-lakshmi-ganapati-pi.vercel.app");
+  assert.ok(unauth.message.includes("sri-lakshmi-ganapati-pi.vercel.app"));
+  assert.ok(unauth.message.includes("Authorized domains"));
+
+  const unauthNoHost = formatGoogleSignInError({
+    code: "auth/unauthorized-domain",
+    hostname: "   ",
+  });
+  assert.equal(unauthNoHost.unauthorizedDomain, undefined);
+  assert.ok(unauthNoHost.message.includes("Authorized domains"));
+
+  const blocked = formatGoogleSignInError({ code: "auth/popup-blocked" });
+  assert.equal(blocked.unauthorizedDomain, undefined);
+  assert.ok(blocked.message.includes("Popup blocked"));
+
+  const net = formatGoogleSignInError({ code: "auth/network-request-failed" });
+  assert.ok(net.message.includes("No internet connection"));
+});
+

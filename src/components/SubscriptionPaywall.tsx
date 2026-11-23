@@ -19,6 +19,7 @@ import {
 import { BusinessProfile, Language, ThemeMode } from "../types";
 import { BusinessEmblem } from "./BusinessEmblem";
 import { GoogleVaultUser } from "../services/firebaseBackup";
+import { isNativeAndroidApk } from "../utils/platformUtils";
 import {
   OWNER_WHATSAPP_DISPLAY,
   OWNER_WHATSAPP_NUMBER,
@@ -38,6 +39,7 @@ interface SubscriptionPaywallProps {
   googleUser: GoogleVaultUser | null;
   googleSigningIn: boolean;
   checkingCloudLicense: boolean;
+  cloudAuthError?: { message: string; unauthorizedDomain?: string } | null;
   onToggleLang: () => void;
   onToggleTheme: () => void;
   onLock: () => void;
@@ -61,6 +63,7 @@ export const SubscriptionPaywall: React.FC<SubscriptionPaywallProps> = ({
   googleUser,
   googleSigningIn,
   checkingCloudLicense,
+  cloudAuthError,
   onToggleLang,
   onToggleTheme,
   onLock,
@@ -73,6 +76,8 @@ export const SubscriptionPaywall: React.FC<SubscriptionPaywallProps> = ({
   const [keyInput, setKeyInput] = useState("");
   const [keyError, setKeyError] = useState("");
   const [copiedId, setCopiedId] = useState(false);
+  const [copiedDomain, setCopiedDomain] = useState(false);
+  const runningInApk = isNativeAndroidApk();
 
   const isExpired = access.reason === "expired";
   const isRevoked = access.reason === "revoked";
@@ -88,6 +93,20 @@ export const SubscriptionPaywall: React.FC<SubscriptionPaywallProps> = ({
       setTimeout(() => setCopiedId(false), 2000);
     } catch {
       showToast(deviceId, "info");
+    }
+  };
+
+  const handleCopyAuthDomain = async (domain: string) => {
+    try {
+      await navigator.clipboard.writeText(domain);
+      setCopiedDomain(true);
+      showToast(
+        lang === "te" ? `డొమైన్ కాపీ అయింది: ${domain} ✓` : `Copied domain: ${domain} ✓`,
+        "info"
+      );
+      setTimeout(() => setCopiedDomain(false), 2000);
+    } catch {
+      showToast(domain, "info");
     }
   };
 
@@ -381,23 +400,80 @@ export const SubscriptionPaywall: React.FC<SubscriptionPaywallProps> = ({
             </div>
 
             {!googleUser ? (
-              <button
-                type="button"
-                onClick={() => void onGoogleSignIn()}
-                disabled={googleSigningIn}
-                className="w-full min-h-[44px] py-2.5 px-4 rounded-xl bg-slate-900 dark:bg-blue-600 hover:bg-slate-800 dark:hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-60"
-              >
-                <Cloud className="w-4 h-4" />
-                <span>
-                  {googleSigningIn
-                    ? lang === "te"
-                      ? "కనెక్ట్ అవుతోంది..."
-                      : "Connecting Google..."
-                    : lang === "te"
-                    ? "Google తో సైన్ ఇన్ చేయండి"
-                    : "Sign in with Google"}
-                </span>
-              </button>
+              runningInApk ? (
+                <div className="p-3 rounded-2xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/70 space-y-1.5 text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                  <div className="font-black text-blue-900 dark:text-blue-200">
+                    {lang === "te"
+                      ? "Android APK యాక్టివేషన్ విధానం"
+                      : "How APK Activation Works"}
+                  </div>
+                  <p>
+                    {lang === "te"
+                      ? "పైన ఉన్న మీ Device ID కాపీ చేసి WhatsApp (+91 95733 28444) కి పంపండి. వచ్చిన కీ ని ఎడమవైపు నమోదు చేయండి."
+                      : "Copy your Device ID above, choose a plan below (or WhatsApp +91 95733 28444), and paste your Activation Key on the left."}
+                  </p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {lang === "te"
+                      ? "Google సైన్-ఇన్ & Owner అడ్మిన్ Chrome వెబ్ యాప్‌లో మాత్రమే పనిచేస్తాయి."
+                      : "Google Sign-In & Owner Admin Console run in Chrome web browser."}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  <button
+                    type="button"
+                    onClick={() => void onGoogleSignIn()}
+                    disabled={googleSigningIn}
+                    className="w-full min-h-[44px] py-2.5 px-4 rounded-xl bg-slate-900 dark:bg-blue-600 hover:bg-slate-800 dark:hover:bg-blue-700 text-white font-bold text-xs flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-60"
+                  >
+                    <Cloud className="w-4 h-4" />
+                    <span>
+                      {googleSigningIn
+                        ? lang === "te"
+                          ? "కనెక్ట్ అవుతోంది..."
+                          : "Connecting Google..."
+                        : lang === "te"
+                        ? "Google తో సైన్ ఇన్ చేయండి"
+                        : "Sign in with Google"}
+                    </span>
+                  </button>
+
+                  {cloudAuthError && (
+                    <div
+                      role="alert"
+                      className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-xs text-rose-800 dark:text-rose-200 space-y-2 leading-relaxed"
+                    >
+                      <div className="font-bold break-words">{cloudAuthError.message}</div>
+                      {cloudAuthError.unauthorizedDomain && (
+                        <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-rose-200/70 dark:border-rose-800/70">
+                          <code className="font-mono text-[11px] font-bold text-rose-900 dark:text-rose-100 truncate select-all">
+                            {cloudAuthError.unauthorizedDomain}
+                          </code>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void handleCopyAuthDomain(cloudAuthError.unauthorizedDomain!)
+                            }
+                            className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+                          >
+                            {copiedDomain ? (
+                              <>
+                                <Check className="w-3 h-3" />
+                                <span>{lang === "te" ? "కాపీ అయింది" : "Copied"}</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                <span>{lang === "te" ? "డొమైన్ కాపీ" : "Copy Domain"}</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
             ) : (
               <button
                 type="button"

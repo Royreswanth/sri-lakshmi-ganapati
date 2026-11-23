@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { PinScreen } from "./components/PinScreen";
 import { HeaderNav } from "./components/HeaderNav";
 import { BottomTabBar, TabType } from "./components/BottomTabBar";
@@ -107,6 +107,10 @@ export default function App() {
   );
   const [googleSigningIn, setGoogleSigningIn] = useState(false);
   const [checkingCloudLicense, setCheckingCloudLicense] = useState(false);
+  const [paywallCloudError, setPaywallCloudError] = useState<{
+    message: string;
+    unauthorizedDomain?: string;
+  } | null>(null);
   const [settingsSectionReq, setSettingsSectionReq] = useState<{
     section: SettingsSection;
     nonce: number;
@@ -129,6 +133,7 @@ export default function App() {
 
   // Toast notification
   const [toast, setToast] = useState<ToastState | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const navigateToTab = (
     targetTab: TabType,
@@ -154,8 +159,14 @@ export default function App() {
     msg: string,
     type: "success" | "error" | "info" = "success"
   ) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 2500);
+    toastTimerRef.current = setTimeout(
+      () => setToast(null),
+      type === "error" ? 4000 : 2800
+    );
   };
 
   // 3-Minute Auto-lock on inactivity
@@ -245,12 +256,18 @@ export default function App() {
 
   const handlePaywallGoogleSignIn = async () => {
     setGoogleSigningIn(true);
+    setPaywallCloudError(null);
     try {
       const res = await signInWithGoogle();
       if (res.success && res.user) {
         setGoogleUser(res.user);
+        setPaywallCloudError(null);
         showToast(res.message, "success");
       } else {
+        setPaywallCloudError({
+          message: res.message,
+          unauthorizedDomain: res.unauthorizedDomain,
+        });
         showToast(res.message, "error");
       }
     } finally {
@@ -261,6 +278,7 @@ export default function App() {
   const handlePaywallGoogleSignOut = async () => {
     await signOutGoogle();
     setGoogleUser(null);
+    setPaywallCloudError(null);
     showToast(lang === "te" ? "లాగ్‌అవుట్ అయింది" : "Signed out", "info");
   };
 
@@ -495,9 +513,11 @@ export default function App() {
     return (
       <>
         {toast && (
-          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 pointer-events-none print:hidden">
+          <div className="fixed bottom-6 left-3 right-3 z-50 flex justify-center pointer-events-none print:hidden">
             <div
-              className={`px-4 py-2 rounded-full font-bold text-xs shadow-xl text-white flex items-center gap-1.5 whitespace-nowrap ${
+              role="status"
+              aria-live="polite"
+              className={`max-w-md w-fit px-4 py-2.5 rounded-2xl font-bold text-xs shadow-xl text-white text-center whitespace-normal break-words leading-snug ${
                 toast.type === "success"
                   ? "bg-emerald-600 shadow-emerald-900/30"
                   : toast.type === "error"
@@ -518,6 +538,7 @@ export default function App() {
           googleUser={googleUser}
           googleSigningIn={googleSigningIn}
           checkingCloudLicense={checkingCloudLicense}
+          cloudAuthError={paywallCloudError}
           onToggleLang={handleToggleLang}
           onToggleTheme={handleToggleTheme}
           onLock={() => setUnlocked(false)}
@@ -540,9 +561,11 @@ export default function App() {
     >
       {/* Toast Alert */}
       {toast && (
-        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 pointer-events-none animate-in fade-in slide-in-from-bottom-4 duration-200 print:hidden">
+        <div className="fixed bottom-20 left-3 right-3 z-50 flex justify-center pointer-events-none animate-in fade-in slide-in-from-bottom-4 duration-200 print:hidden">
           <div
-            className={`px-4 py-2 rounded-full font-bold text-xs shadow-xl text-white flex items-center gap-1.5 whitespace-nowrap ${
+            role="status"
+            aria-live="polite"
+            className={`max-w-md w-fit px-4 py-2.5 rounded-2xl font-bold text-xs shadow-xl text-white text-center whitespace-normal break-words leading-snug ${
               toast.type === "success"
                 ? "bg-emerald-600 shadow-emerald-900/30"
                 : toast.type === "error"

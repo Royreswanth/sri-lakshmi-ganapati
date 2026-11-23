@@ -38,6 +38,7 @@ import {
   clampNumber,
   clipString,
   estimateJsonBytes,
+  formatGoogleSignInError,
 } from "../utils/cloudSyncUtils";
 import {
   PaidOrFreePlanId,
@@ -154,12 +155,13 @@ export async function signInWithGoogle(): Promise<{
   success: boolean;
   user?: GoogleVaultUser;
   message: string;
+  unauthorizedDomain?: string;
 }> {
   if (isNativeAndroidApk()) {
     return {
       success: false,
       message:
-        "Google popup sign-in is restricted inside standalone APK WebView. Use Activation Key (WhatsApp +91 95733 28444) and Offline JSON Backup/Restore.",
+        "Google popup login works in Chrome web browser only. In Android APK, use Share Backup (Drive / WhatsApp) or JSON Backup/Restore.",
     };
   }
   try {
@@ -179,29 +181,17 @@ export async function signInWithGoogle(): Promise<{
       message: `Connected ${mapped.email} ✓`,
     };
   } catch (error: any) {
-    const code = error?.code || "";
-    if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
-      return {
-        success: false,
-        message: "Google sign-in popup was closed before completing.",
-      };
-    }
-    if (code === "auth/popup-blocked") {
-      return {
-        success: false,
-        message: "Popup blocked by browser. Please allow popups for this site.",
-      };
-    }
-    if (code === "auth/unauthorized-domain") {
-      return {
-        success: false,
-        message:
-          "Add this domain to Firebase Console → Authentication → Authorized domains, or use Activation Key.",
-      };
-    }
+    const hostname =
+      typeof window !== "undefined" ? window.location.hostname : "";
+    const formatted = formatGoogleSignInError({
+      code: error?.code,
+      rawMessage: error?.message,
+      hostname,
+    });
     return {
       success: false,
-      message: error?.message || "Failed to sign in with Google.",
+      message: formatted.message,
+      unauthorizedDomain: formatted.unauthorizedDomain,
     };
   }
 }

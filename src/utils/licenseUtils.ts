@@ -100,11 +100,19 @@ export function getOrCreateDeviceId(): string {
     if (existing && /^LBP-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(existing)) {
       return existing;
     }
-    const seg = () =>
-      Array.from({ length: 4 }, () =>
-        DEVICE_ALPHABET[Math.floor(Math.random() * DEVICE_ALPHABET.length)]
-      ).join("");
-    const id = `LBP-${seg()}-${seg()}`;
+    const randBytes = new Uint8Array(8);
+    if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+      crypto.getRandomValues(randBytes);
+    } else {
+      for (let i = 0; i < randBytes.length; i++) {
+        randBytes[i] = Math.floor(Math.random() * 256);
+      }
+    }
+    const chars = Array.from(
+      randBytes,
+      (b) => DEVICE_ALPHABET[b % DEVICE_ALPHABET.length]
+    );
+    const id = `LBP-${chars.slice(0, 4).join("")}-${chars.slice(4, 8).join("")}`;
     localStorage.setItem(DEVICE_STORAGE_KEY, id);
     return id;
   } catch {

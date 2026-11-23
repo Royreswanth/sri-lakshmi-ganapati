@@ -77,6 +77,7 @@ import {
   verifyActivationKey,
 } from "../utils/licenseUtils";
 import { BusinessEmblem } from "./BusinessEmblem";
+import { isNativeAndroidApk } from "../utils/platformUtils";
 import {
   uploadCloudBackup,
   getCloudBackupsList,
@@ -362,6 +363,8 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   const [cloudBackups, setCloudBackups] = useState<CloudBackupRecord[]>([]);
   const [loadingCloudBackups, setLoadingCloudBackups] = useState(false);
   const [cloudError, setCloudError] = useState<string | null>(null);
+  const [cloudUnauthorizedDomain, setCloudUnauthorizedDomain] = useState<string | null>(null);
+  const [copiedDomain, setCopiedDomain] = useState(false);
   const [lastCloudTime, setLastCloudTime] = useState<string>(
     () => localStorage.getItem("slg_last_cloud_backup") || ""
   );
@@ -388,6 +391,8 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   const [adminLicenses, setAdminLicenses] = useState<CloudLicenseRecord[]>([]);
   const [loadingAdminLicenses, setLoadingAdminLicenses] = useState(false);
   const [copiedGeneratedKey, setCopiedGeneratedKey] = useState(false);
+
+  const runningInApk = isNativeAndroidApk();
 
   const isOwnerAdmin = isOwnerAdminEmail(
     googleUser?.email,
@@ -553,10 +558,13 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
   const handleGoogleSignIn = async () => {
     setGoogleSigningIn(true);
     setCloudError(null);
+    setCloudUnauthorizedDomain(null);
     try {
       const res = await signInWithGoogle();
       if (res.success && res.user) {
         setGoogleUser(res.user);
+        setCloudError(null);
+        setCloudUnauthorizedDomain(null);
         showToast(
           lang === "te"
             ? `${res.user.email} తో క్లౌడ్ కనెక్ట్ అయింది ✓`
@@ -564,6 +572,8 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
           "success"
         );
       } else {
+        setCloudError(res.message);
+        setCloudUnauthorizedDomain(res.unauthorizedDomain || null);
         showToast(res.message, "error");
       }
     } finally {
@@ -571,10 +581,26 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
     }
   };
 
+  const handleCopyAuthDomain = async (domain: string) => {
+    try {
+      await navigator.clipboard.writeText(domain);
+      setCopiedDomain(true);
+      showToast(
+        lang === "te" ? `డొమైన్ కాపీ అయింది: ${domain} ✓` : `Copied domain: ${domain} ✓`,
+        "info"
+      );
+      setTimeout(() => setCopiedDomain(false), 2000);
+    } catch {
+      showToast(domain, "info");
+    }
+  };
+
   const handleGoogleSignOut = async () => {
     await signOutGoogle();
     setGoogleUser(null);
     setCloudBackups([]);
+    setCloudError(null);
+    setCloudUnauthorizedDomain(null);
     showToast(
       lang === "te"
         ? "క్లౌడ్ ఖాతా లాగ్‌అవుట్ అయింది (స్థానిక డేటా సురక్షితం)"
@@ -950,7 +976,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
             <span className="text-slate-400">›</span>
           </button>
 
-          {/* Cloud Backup & Restore */}
+          {/* Backup & Restore */}
           <button
             type="button"
             onClick={() => setActiveSection("backup")}
@@ -962,7 +988,15 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               </div>
               <div className="min-w-0">
                 <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100 flex items-center gap-2">
-                  <span>{lang === "te" ? "క్లౌడ్ బ్యాకప్ & రీస్టోర్" : "Cloud Backup & Restore"}</span>
+                  <span>
+                    {runningInApk
+                      ? lang === "te"
+                        ? "బ్యాకప్ & రీస్టోర్ (Drive / ఫైల్)"
+                        : "Backup & Restore (Drive / JSON)"
+                      : lang === "te"
+                      ? "క్లౌడ్ బ్యాకప్ & రీస్టోర్"
+                      : "Cloud Backup & Restore"}
+                  </span>
                   {googleUser && (
                     <span className="px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 text-[10px] font-bold shrink-0">
                       Google ✓
@@ -972,6 +1006,10 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 <p className="text-xs text-slate-600 dark:text-slate-400 truncate">
                   {googleUser
                     ? googleUser.email
+                    : runningInApk
+                    ? lang === "te"
+                      ? "WhatsApp, Google Drive లేదా JSON ఫైల్‌కు సేవ్ చేయండి"
+                      : "Save to Google Drive, WhatsApp or JSON File"
                     : lang === "te"
                     ? "కొత్త ఫోన్‌కు Google సైన్-ఇన్ ద్వారా సింక్ చేయండి"
                     : "Sign in with Google for Cross-Phone Sync & JSON"}
@@ -981,11 +1019,18 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
             <span className="text-slate-400">›</span>
           </button>
 
-          {/* Install Mobile App (PWA) */}
+          {/* Install Mobile App (PWA) / APK Status */}
           <button
             type="button"
             onClick={async () => {
-              if (isInstalled) {
+              if (runningInApk) {
+                showToast(
+                  lang === "te"
+                    ? `${profile.businessName || "LineBook Pro"} Android APK లో 100% ఆఫ్‌లైన్ రన్ అవుతోంది ✓`
+                    : `${profile.businessName || "LineBook Pro"} Android APK is installed & 100% offline ready ✓`,
+                  "info"
+                );
+              } else if (isInstalled) {
                 showToast(
                   lang === "te"
                     ? "యాప్ మీ ఫోన్‌లో ఇన్‌స్టాల్ చేయబడింది! 100% ఆఫ్‌లైన్ పనిచేస్తుంది."
@@ -1014,16 +1059,28 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               </div>
               <div className="min-w-0">
                 <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100 flex items-center gap-2">
-                  <span>{lang === "te" ? "మొబైల్ యాప్ (PWA)" : "Install Mobile App (PWA)"}</span>
-                  {isInstalled && (
+                  <span>
+                    {runningInApk
+                      ? lang === "te"
+                        ? "Android APK యాప్"
+                        : "Android App (APK)"
+                      : lang === "te"
+                      ? "మొబైల్ యాప్ (PWA)"
+                      : "Install Mobile App (PWA)"}
+                  </span>
+                  {(runningInApk || isInstalled) && (
                     <span className="px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 text-[10px] font-bold flex items-center gap-1 shrink-0">
                       <CheckCircle2 className="w-3 h-3" />
-                      {lang === "te" ? "ఇన్‌స్టాల్ అయింది" : "Installed"}
+                      {runningInApk
+                        ? "APK Active"
+                        : lang === "te"
+                        ? "ఇన్‌స్టాల్ అయింది"
+                        : "Installed"}
                     </span>
                   )}
                 </h4>
                 <p className="text-xs text-slate-600 dark:text-slate-400 truncate">
-                  {isInstalled
+                  {runningInApk || isInstalled
                     ? lang === "te"
                       ? "100% ఆఫ్‌లైన్ విలేజ్ మోడ్ సపోర్ట్"
                       : "Runs 100% offline in remote villages"
@@ -1709,6 +1766,10 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
                   SYNC ON
                 </span>
+              ) : runningInApk ? (
+                <span className="px-2.5 py-1 rounded-full bg-blue-100 dark:bg-blue-950/80 text-blue-800 dark:text-blue-300 text-[10px] font-black border border-blue-200 dark:border-blue-800 shrink-0">
+                  APK MODE
+                </span>
               ) : (
                 <span className="px-2.5 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] font-black border border-slate-200 dark:border-slate-700 shrink-0">
                   LOCAL ONLY
@@ -1717,48 +1778,103 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
             </div>
 
             {!googleUser ? (
-              <div className="space-y-3">
-                <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                  {lang === "te"
-                    ? "మీ లెడ్జర్ ఆఫ్‌లైన్‌లో ఎప్పుడూ పనిచేస్తుంది. కొత్త ఫోన్ మారినప్పుడు మీ పూర్తి ఖాతాలను తిరిగి పొందడానికి మీ Google ఖాతాతో సైన్ ఇన్ చేయండి."
-                    : "Your lending ledger always runs 100% offline first. Sign in with your Google account to securely back up snapshots across any phone."}
-                </p>
+              runningInApk ? (
+                <div className="space-y-3">
+                  <div className="p-3.5 rounded-2xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/70 space-y-2">
+                    <div className="text-xs font-black text-blue-950 dark:text-blue-200">
+                      {lang === "te"
+                        ? "Android APK లో Google Drive & WhatsApp బ్యాకప్"
+                        : "Backing up inside Android APK"}
+                    </div>
+                    <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                      {lang === "te"
+                        ? "Android APK లోపల Google పాప్-అప్ లాగిన్ Google భద్రతా నియమాల వల్ల పనిచేయదు (Chrome బ్రౌజర్‌లో మాత్రమే పనిచేస్తుంది)."
+                        : "Google popup login only runs inside Chrome browser (Android restricts Google web popups inside standalone APKs)."}
+                    </p>
+                    <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed">
+                      {lang === "te"
+                        ? "ఈ APK నుండి మీ డేటాను సురక్షితంగా Google Drive లేదా WhatsApp లో సేవ్ చేయడానికి క్రింద ఉన్న 'వాట్సాప్ లేదా డ్రైవ్‌కి పంపండి' నొక్కండి. Chrome లోని పాత డేటాను ఈ APK లోకి తేవడానికి అక్కడ JSON ఫైల్ డౌన్‌లోడ్ చేసి క్రింద రీస్టోర్ చేయండి."
+                        : "To save directly to Google Drive or WhatsApp from this APK, tap 'Share Backup via WhatsApp / Drive' below. To move old Chrome data here, download the JSON file from Chrome and restore it below."}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                    {lang === "te"
+                      ? "మీ లెడ్జర్ ఆఫ్‌లైన్‌లో ఎప్పుడూ పనిచేస్తుంది. కొత్త ఫోన్ మారినప్పుడు మీ పూర్తి ఖాతాలను తిరిగి పొందడానికి మీ Google ఖాతాతో సైన్ ఇన్ చేయండి."
+                      : "Your lending ledger always runs 100% offline first. Sign in with your Google account to securely back up snapshots across any phone."}
+                  </p>
 
-                <button
-                  type="button"
-                  onClick={handleGoogleSignIn}
-                  disabled={googleSigningIn}
-                  className="w-full min-h-[48px] py-3 px-4 rounded-2xl bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-black text-xs flex items-center justify-center gap-2.5 shadow-sm cursor-pointer transition-all disabled:opacity-60"
-                >
-                  <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
-                    <path
-                      fill="#EA4335"
-                      d="M12 5.04c1.94 0 3.51.68 4.75 1.81l3.55-3.55C18.17 1.34 15.32 0 12 0 7.31 0 3.25 2.69 1.25 6.62l4.14 3.21C6.39 6.95 8.98 5.04 12 5.04z"
-                    />
-                    <path
-                      fill="#4285F4"
-                      d="M23.49 12.27c0-.79-.07-1.55-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.74-2.41 3.58l3.88 3.01c2.27-2.09 3.55-5.17 3.55-8.83z"
-                    />
-                    <path
-                      fill="#FBBC05"
-                      d="M5.39 14.17c-.24-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29L1.25 6.38C.45 7.98 0 9.93 0 11.88s.45 3.9 1.25 5.5l4.14-3.21z"
-                    />
-                    <path
-                      fill="#34A853"
-                      d="M12 24c3.24 0 5.95-1.08 7.93-2.9l-3.88-3.01c-1.08.72-2.45 1.15-4.05 1.15-3.02 0-5.61-1.91-6.61-4.59l-4.14 3.21C3.25 21.31 7.31 24 12 24z"
-                    />
-                  </svg>
-                  <span>
-                    {googleSigningIn
-                      ? lang === "te"
-                        ? "Google ఖాతాకు కనెక్ట్ అవుతోంది..."
-                        : "Connecting Google Account..."
-                      : lang === "te"
-                      ? "క్లౌడ్ సింక్ కోసం Google తో సైన్ ఇన్ చేయండి"
-                      : "Sign in with Google to Sync Across Phones"}
-                  </span>
-                </button>
-              </div>
+                  <button
+                    type="button"
+                    onClick={handleGoogleSignIn}
+                    disabled={googleSigningIn}
+                    className="w-full min-h-[48px] py-3 px-4 rounded-2xl bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 border-2 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-black text-xs flex items-center justify-center gap-2.5 shadow-sm cursor-pointer transition-all disabled:opacity-60"
+                  >
+                    <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                      <path
+                        fill="#EA4335"
+                        d="M12 5.04c1.94 0 3.51.68 4.75 1.81l3.55-3.55C18.17 1.34 15.32 0 12 0 7.31 0 3.25 2.69 1.25 6.62l4.14 3.21C6.39 6.95 8.98 5.04 12 5.04z"
+                      />
+                      <path
+                        fill="#4285F4"
+                        d="M23.49 12.27c0-.79-.07-1.55-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.74-2.41 3.58l3.88 3.01c2.27-2.09 3.55-5.17 3.55-8.83z"
+                      />
+                      <path
+                        fill="#FBBC05"
+                        d="M5.39 14.17c-.24-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29L1.25 6.38C.45 7.98 0 9.93 0 11.88s.45 3.9 1.25 5.5l4.14-3.21z"
+                      />
+                      <path
+                        fill="#34A853"
+                        d="M12 24c3.24 0 5.95-1.08 7.93-2.9l-3.88-3.01c-1.08.72-2.45 1.15-4.05 1.15-3.02 0-5.61-1.91-6.61-4.59l-4.14 3.21C3.25 21.31 7.31 24 12 24z"
+                      />
+                    </svg>
+                    <span>
+                      {googleSigningIn
+                        ? lang === "te"
+                          ? "Google ఖాతాకు కనెక్ట్ అవుతోంది..."
+                          : "Connecting Google Account..."
+                        : lang === "te"
+                        ? "క్లౌడ్ సింక్ కోసం Google తో సైన్ ఇన్ చేయండి"
+                        : "Sign in with Google to Sync Across Phones"}
+                    </span>
+                  </button>
+
+                  {cloudError && (
+                    <div
+                      role="alert"
+                      className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-xs text-rose-800 dark:text-rose-200 space-y-2 leading-relaxed"
+                    >
+                      <div className="font-bold break-words">{cloudError}</div>
+                      {cloudUnauthorizedDomain && (
+                        <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-rose-200/70 dark:border-rose-800/70">
+                          <code className="font-mono text-[11px] font-bold text-rose-900 dark:text-rose-100 truncate select-all">
+                            {cloudUnauthorizedDomain}
+                          </code>
+                          <button
+                            type="button"
+                            onClick={() => void handleCopyAuthDomain(cloudUnauthorizedDomain)}
+                            className="px-2.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
+                          >
+                            {copiedDomain ? (
+                              <>
+                                <Check className="w-3 h-3" />
+                                <span>{lang === "te" ? "కాపీ అయింది" : "Copied"}</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                <span>{lang === "te" ? "డొమైన్ కాపీ" : "Copy Domain"}</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
             ) : (
               <div className="space-y-3.5">
                 {/* Connected Google Account Bar */}
@@ -2113,10 +2229,11 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               </label>
               <input
                 type="password"
+                inputMode="numeric"
                 required
                 maxLength={4}
                 value={oldPin}
-                onChange={(e) => setOldPin(e.target.value)}
+                onChange={(e) => setOldPin(e.target.value.replace(/[^0-9]/g, ""))}
                 placeholder="4 digits"
                 className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 font-bold text-base outline-none tracking-widest focus:border-blue-500"
               />
@@ -2128,6 +2245,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               </label>
               <input
                 type="password"
+                inputMode="numeric"
                 required
                 maxLength={4}
                 value={newPin1}
@@ -2143,6 +2261,7 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               </label>
               <input
                 type="password"
+                inputMode="numeric"
                 required
                 maxLength={4}
                 value={newPin2}

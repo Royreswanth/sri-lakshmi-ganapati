@@ -136,3 +136,56 @@ export function estimateJsonBytes(obj: unknown): number {
   }
   return json.length;
 }
+
+export interface GoogleSignInErrorResult {
+  message: string;
+  unauthorizedDomain?: string;
+}
+
+/**
+ * Formats Firebase Auth sign-in error codes into actionable user-facing messages,
+ * surfacing the exact hostname required for Firebase Console -> Authorized domains.
+ */
+export function formatGoogleSignInError(params: {
+  code?: string;
+  rawMessage?: string;
+  hostname?: string;
+}): GoogleSignInErrorResult {
+  const code = (params.code || "").trim();
+  const host = (params.hostname || "").trim();
+
+  if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+    return {
+      message: "Google sign-in popup was closed before completing.",
+    };
+  }
+  if (code === "auth/popup-blocked") {
+    return {
+      message: "Popup blocked by browser. Please allow popups for this site and try again.",
+    };
+  }
+  if (code === "auth/network-request-failed") {
+    return {
+      message: "No internet connection for Google Sign-In. Offline ledger still works normally.",
+    };
+  }
+  if (code === "auth/operation-not-supported-in-this-environment") {
+    return {
+      message:
+        "Google popup login is not supported in this browser view. Open the site in Chrome or use JSON Backup.",
+    };
+  }
+  if (code === "auth/unauthorized-domain") {
+    return {
+      unauthorizedDomain: host || undefined,
+      message: host
+        ? `Domain "${host}" is not authorized yet. Add "${host}" in Firebase Console → Authentication → Settings → Authorized domains.`
+        : "Add this domain to Firebase Console → Authentication → Settings → Authorized domains.",
+    };
+  }
+
+  return {
+    message: params.rawMessage || "Failed to sign in with Google.",
+  };
+}
+
