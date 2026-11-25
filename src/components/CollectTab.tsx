@@ -35,6 +35,7 @@ import {
   PaymentStatus,
   DayOfWeek,
   RepaymentFrequency,
+  LoanEntryMode,
 } from "../types";
 import { translations } from "../translations";
 import {
@@ -55,6 +56,7 @@ import {
   getFrequencyShortPrefix,
   getVillageCollectionAccess,
   isBorrowerClosed,
+  resolveLoanTermsByMode,
 } from "../utils/financeUtils";
 import {
   buildWhatsAppReceiptText,
@@ -152,6 +154,7 @@ export const CollectTab: React.FC<CollectTabProps> = ({
     guarantorPhone: "",
     repaymentFreq: "weekly" as RepaymentFrequency,
     loanAmt: "10000",
+    interestPct: "20",
     totalPayable: "12000",
     durationWeeks: "12",
     weeklyOverride: "",
@@ -509,10 +512,17 @@ export const CollectTab: React.FC<CollectTabProps> = ({
     setScreen("detail");
   };
 
+  const loanEntryMode: LoanEntryMode = profile.loanEntryMode || "principal_total";
+
   // Add Borrower Submit (Fix D7: Check seqNo uniqueness in same village)
   const handleAddBorrower = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedVillage || !newBorrowerForm.name || !newBorrowerForm.loanAmt) return;
+    if (!selectedVillage || !newBorrowerForm.name) return;
+    if (loanEntryMode === "total_only") {
+      if (!newBorrowerForm.totalPayable) return;
+    } else if (!newBorrowerForm.loanAmt) {
+      return;
+    }
 
     const villageId = selectedVillage.id;
     const existingBs = data.borrowers[villageId] || [];
@@ -532,22 +542,25 @@ export const CollectTab: React.FC<CollectTabProps> = ({
       }
     }
 
-    const loan = parseInt(newBorrowerForm.loanAmt) || 10000;
     const defaultPeriods =
       newBorrowerForm.repaymentFreq === "daily"
         ? 60
         : newBorrowerForm.repaymentFreq === "monthly"
         ? 10
         : 12;
-    const weeks = Math.max(1, parseInt(newBorrowerForm.durationWeeks) || defaultPeriods);
-    const totalPayable = Math.max(0, parseInt(newBorrowerForm.totalPayable) || 0);
-    const overrideDue = parseInt(newBorrowerForm.weeklyOverride) || 0;
-    const weeklyDue =
-      overrideDue > 0
-        ? overrideDue
-        : calculateInstallmentDueFromTotal(totalPayable, weeks);
-    const totalReturn = overrideDue > 0 ? weeklyDue * weeks : totalPayable;
-    const pct = computeImpliedInterestPct(loan, totalReturn);
+    const resolvedTerms = resolveLoanTermsByMode({
+      mode: loanEntryMode,
+      loanAmtInput: parseInt(newBorrowerForm.loanAmt, 10) || 10000,
+      interestPctInput: parseFloat(newBorrowerForm.interestPct) || 0,
+      totalPayableInput: parseInt(newBorrowerForm.totalPayable, 10) || 0,
+      periods: Math.max(1, parseInt(newBorrowerForm.durationWeeks, 10) || defaultPeriods),
+      weeklyOverride: parseInt(newBorrowerForm.weeklyOverride, 10) || 0,
+    });
+    const loan = resolvedTerms.loanAmt;
+    const weeks = resolvedTerms.periods;
+    const weeklyDue = resolvedTerms.weeklyDue;
+    const totalReturn = resolvedTerms.totalReturn;
+    const pct = resolvedTerms.interestPct;
     const weeksPaid = newBorrowerForm.isOngoing ? parseInt(newBorrowerForm.weeksPaid) || 0 : 0;
 
     const newBorrower: Borrower = {
@@ -622,6 +635,7 @@ export const CollectTab: React.FC<CollectTabProps> = ({
       guarantorPhone: "",
       repaymentFreq: "weekly",
       loanAmt: "10000",
+      interestPct: "20",
       totalPayable: "12000",
       durationWeeks: "12",
       weeklyOverride: "",
@@ -2195,24 +2209,46 @@ export const CollectTab: React.FC<CollectTabProps> = ({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-xs font-bold text-slate-600 dark:text-slate-300 block mb-1">
-                      {lang === "te" ? "అసలు మొత్తం (₹) *" : "Loan Amount (₹) *"}
-                    </label>
-                    <input
-                      type="number"
-                      required
-                      value={newBorrowerForm.loanAmt}
-                      onChange={(e) =>
-                        setNewBorrowerForm((f) => ({
-                          ...f,
-                          loanAmt: e.target.value,
-                        }))
-                      }
-                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm outline-none font-bold focus:border-blue-500 tabular-nums"
-                    />
+                {loanEntryMode === "principal_interest" ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs font-bold text-slate-600 dark:text-slate-300 block mb-1">
+                        {lang === "te" ? "అసలు మొత్తం (₹) *" : "Loan Amount (₹) *"}
+                      </label>
+                      <input
+                        type="number"
+                        required
+                        value={newBorrowerForm.loanAmt}
+                        onChange={(e) =>
+                          setNewBorrowerForm((f) => ({
+                            ...f,
+                            loanAmt: e.target.value,
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm outline-none font-bold focus:border-blue-500 tabular-nums"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-slate-600 dark:text-slate-300 block mb-1">
+                        {lang === "te" ? "వడ్డీ % *" : "Interest % *"}
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.5"
+                        required
+                        value={newBorrowerForm.interestPct}
+                        onChange={(e) =>
+                          setNewBorrowerForm((f) => ({
+                            ...f,
+                            interestPct: e.target.value,
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm outline-none font-bold focus:border-blue-500 tabular-nums"
+                      />
+                    </div>
                   </div>
+                ) : loanEntryMode === "total_only" ? (
                   <div>
                     <label className="text-xs font-bold text-slate-600 dark:text-slate-300 block mb-1">
                       {lang === "te" ? "చెల్లించాల్సిన మొత్తం (₹) *" : "Total Amount to Pay (₹) *"}
@@ -2231,7 +2267,45 @@ export const CollectTab: React.FC<CollectTabProps> = ({
                       className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm outline-none font-bold focus:border-blue-500 tabular-nums"
                     />
                   </div>
-                </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs font-bold text-slate-600 dark:text-slate-300 block mb-1">
+                        {lang === "te" ? "అసలు మొత్తం (₹) *" : "Loan Amount (₹) *"}
+                      </label>
+                      <input
+                        type="number"
+                        required
+                        value={newBorrowerForm.loanAmt}
+                        onChange={(e) =>
+                          setNewBorrowerForm((f) => ({
+                            ...f,
+                            loanAmt: e.target.value,
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm outline-none font-bold focus:border-blue-500 tabular-nums"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-slate-600 dark:text-slate-300 block mb-1">
+                        {lang === "te" ? "చెల్లించాల్సిన మొత్తం (₹) *" : "Total Amount to Pay (₹) *"}
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        required
+                        value={newBorrowerForm.totalPayable}
+                        onChange={(e) =>
+                          setNewBorrowerForm((f) => ({
+                            ...f,
+                            totalPayable: e.target.value,
+                          }))
+                        }
+                        className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm outline-none font-bold focus:border-blue-500 tabular-nums"
+                      />
+                    </div>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-2 gap-2">
                   <div>
@@ -2302,10 +2376,13 @@ export const CollectTab: React.FC<CollectTabProps> = ({
                     <input
                       type="number"
                       placeholder={`${lang === "te" ? "ఆటో:" : "Auto:"} ${formatCurrency(
-                        calculateInstallmentDueFromTotal(
-                          parseInt(newBorrowerForm.totalPayable) || 0,
-                          parseInt(newBorrowerForm.durationWeeks) || 12
-                        )
+                        resolveLoanTermsByMode({
+                          mode: loanEntryMode,
+                          loanAmtInput: parseInt(newBorrowerForm.loanAmt, 10) || 0,
+                          interestPctInput: parseFloat(newBorrowerForm.interestPct) || 0,
+                          totalPayableInput: parseInt(newBorrowerForm.totalPayable, 10) || 0,
+                          periods: Math.max(1, parseInt(newBorrowerForm.durationWeeks, 10) || 12),
+                        }).weeklyDue
                       )}`}
                       value={newBorrowerForm.weeklyOverride}
                       onChange={(e) =>
@@ -2321,14 +2398,17 @@ export const CollectTab: React.FC<CollectTabProps> = ({
 
                 {/* Live EMI Preview Bar */}
                 {(() => {
-                  const previewPeriods = Math.max(1, parseInt(newBorrowerForm.durationWeeks) || 12);
-                  const previewTotalInput = Math.max(0, parseInt(newBorrowerForm.totalPayable) || 0);
-                  const overrideVal = parseInt(newBorrowerForm.weeklyOverride) || 0;
-                  const previewDue =
-                    overrideVal > 0
-                      ? overrideVal
-                      : calculateInstallmentDueFromTotal(previewTotalInput, previewPeriods);
-                  const previewTotal = overrideVal > 0 ? previewDue * previewPeriods : previewTotalInput;
+                  const previewPeriods = Math.max(1, parseInt(newBorrowerForm.durationWeeks, 10) || 12);
+                  const previewResolved = resolveLoanTermsByMode({
+                    mode: loanEntryMode,
+                    loanAmtInput: parseInt(newBorrowerForm.loanAmt, 10) || 0,
+                    interestPctInput: parseFloat(newBorrowerForm.interestPct) || 0,
+                    totalPayableInput: parseInt(newBorrowerForm.totalPayable, 10) || 0,
+                    periods: previewPeriods,
+                    weeklyOverride: parseInt(newBorrowerForm.weeklyOverride, 10) || 0,
+                  });
+                  const previewDue = previewResolved.weeklyDue;
+                  const previewTotal = previewResolved.totalReturn;
                   return (
                     <div className="px-3 py-2 rounded-xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 flex items-center justify-between text-xs tabular-nums">
                       <span className="font-semibold text-blue-900 dark:text-blue-200">

@@ -17,6 +17,7 @@ import {
   renewBorrowerLoan,
   calculateLoanBreakdown,
   buildLoanSchedulePreview,
+  resolveLoanTermsByMode,
   isBorrowerClosed,
   canCollectVillageOnDate,
   getDaysSinceScheduledDay,
@@ -764,6 +765,75 @@ test('calculateInstallmentDueFromTotal, computeImpliedInterestPct, and renewBorr
   assert.equal(renewed.interestPct, 20);
   assert.equal(renewed.loanHistory?.length, 1);
 });
+
+test('resolveLoanTermsByMode calculates loan terms accurately for all 3 loan entry modes', () => {
+  // 1. Principal + Interest %
+  const m1 = resolveLoanTermsByMode({
+    mode: 'principal_interest',
+    loanAmtInput: 10000,
+    interestPctInput: 20,
+    periods: 12,
+  });
+  assert.deepEqual(m1, {
+    loanAmt: 10000,
+    interestPct: 20,
+    weeklyDue: 1000,
+    totalReturn: 12000,
+    periods: 12,
+  });
+
+  const m1Override = resolveLoanTermsByMode({
+    mode: 'principal_interest',
+    loanAmtInput: 10000,
+    interestPctInput: 20,
+    periods: 12,
+    weeklyOverride: 1100,
+  });
+  assert.equal(m1Override.weeklyDue, 1100);
+  assert.equal(m1Override.totalReturn, 13200);
+  assert.equal(m1Override.interestPct, 32);
+
+  // 2. Principal + Total Amount to Pay
+  const m2 = resolveLoanTermsByMode({
+    mode: 'principal_total',
+    loanAmtInput: 10000,
+    totalPayableInput: 12000,
+    periods: 12,
+  });
+  assert.deepEqual(m2, {
+    loanAmt: 10000,
+    interestPct: 20,
+    weeklyDue: 1000,
+    totalReturn: 12000,
+    periods: 12,
+  });
+
+  // 3. Total Amount to Pay + Weeks Only (no loanAmt or interestPct input)
+  const m3 = resolveLoanTermsByMode({
+    mode: 'total_only',
+    totalPayableInput: 12000,
+    periods: 12,
+  });
+  assert.deepEqual(m3, {
+    loanAmt: 12000,
+    interestPct: 0,
+    weeklyDue: 1000,
+    totalReturn: 12000,
+    periods: 12,
+  });
+
+  const m3Override = resolveLoanTermsByMode({
+    mode: 'total_only',
+    totalPayableInput: 12000,
+    periods: 12,
+    weeklyOverride: 1050,
+  });
+  assert.equal(m3Override.weeklyDue, 1050);
+  assert.equal(m3Override.totalReturn, 12600);
+  assert.equal(m3Override.loanAmt, 12600);
+  assert.equal(m3Override.interestPct, 0);
+});
+
 
 
 

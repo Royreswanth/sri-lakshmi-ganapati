@@ -8,6 +8,7 @@ export type DayOfWeek =
   | "Sunday";
 
 export type RepaymentFrequency = "weekly" | "daily" | "monthly";
+export type LoanEntryMode = "principal_interest" | "principal_total" | "total_only";
 
 export type PaymentStatus = "paid" | "skip" | "short" | "extra";
 export type PaymentMethod = "cash" | "phonepe" | "online";
@@ -208,6 +209,7 @@ export interface BusinessProfile {
   lineDaysConfigured?: boolean;
   enableDailyCashbook?: boolean;
   lineCycleWeeks?: number;
+  loanEntryMode?: LoanEntryMode;
 }
 
 export interface CloudLicenseRecord {

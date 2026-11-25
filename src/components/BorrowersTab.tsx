@@ -28,6 +28,7 @@ import {
   Language,
   BusinessProfile,
   RepaymentFrequency,
+  LoanEntryMode,
   PaymentMethod,
   DayOfWeek,
 } from "../types";
@@ -57,6 +58,7 @@ import {
   getFrequencyShortPrefix,
   isBorrowerClosed,
   renewBorrowerLoan,
+  resolveLoanTermsByMode,
   settleBorrowerEarly,
 } from "../utils/financeUtils";
 
@@ -129,6 +131,7 @@ export const BorrowersTab: React.FC<BorrowersTabProps> = ({
   const [renewForm, setRenewForm] = useState({
     repaymentFreq: "weekly" as RepaymentFrequency,
     loanAmt: "10000",
+    interestPct: "20",
     totalPayable: "12000",
     durationWeeks: "12",
     weeklyOverride: "",
@@ -364,6 +367,8 @@ export const BorrowersTab: React.FC<BorrowersTabProps> = ({
     );
   };
 
+  const loanEntryMode: LoanEntryMode = profile.loanEntryMode || "principal_total";
+
   const openRenewalModal = () => {
     if (!selectedBorrower) return;
     const b = selectedBorrower.borrower;
@@ -373,6 +378,7 @@ export const BorrowersTab: React.FC<BorrowersTabProps> = ({
     setRenewForm({
       repaymentFreq: freq,
       loanAmt: String(b.loanAmt || 10000),
+      interestPct: String(b.interestPct ?? 20),
       totalPayable: String(defaultTotal),
       durationWeeks: String(FREQ_DURATION_DEFAULTS[freq].includes(b.durationWeeks) ? b.durationWeeks : FREQ_DURATION_DEFAULTS[freq][0]),
       weeklyOverride: "",
@@ -390,21 +396,26 @@ export const BorrowersTab: React.FC<BorrowersTabProps> = ({
     e.preventDefault();
     if (!selectedBorrower) return;
     const { borrower, villageId, villageName } = selectedBorrower;
-    const loanAmt = parseInt(renewForm.loanAmt, 10) || 10000;
     const durationWeeks = Math.max(1, parseInt(renewForm.durationWeeks, 10) || 12);
-    const totalPayable = Math.max(0, parseInt(renewForm.totalPayable, 10) || 0);
     const overrideDue = parseInt(renewForm.weeklyOverride, 10) || undefined;
-    const finalTotalReturn = overrideDue ? overrideDue * durationWeeks : totalPayable;
-    const silentInterestPct = computeImpliedInterestPct(loanAmt, finalTotalReturn);
+    const resolvedTerms = resolveLoanTermsByMode({
+      mode: loanEntryMode,
+      loanAmtInput: parseInt(renewForm.loanAmt, 10) || 10000,
+      interestPctInput: parseFloat(renewForm.interestPct) || 0,
+      totalPayableInput: parseInt(renewForm.totalPayable, 10) || 0,
+      periods: durationWeeks,
+      weeklyOverride: overrideDue || 0,
+    });
+    const loanAmt = resolvedTerms.loanAmt;
     const renewDateStr = renewForm.startDate || getTodayStr();
 
     const renewedBorrower = renewBorrowerLoan(
       borrower,
       {
         loanAmt,
-        interestPct: silentInterestPct,
-        totalReturn: finalTotalReturn,
-        durationWeeks,
+        interestPct: resolvedTerms.interestPct,
+        totalReturn: resolvedTerms.totalReturn,
+        durationWeeks: resolvedTerms.periods,
         repaymentFreq: renewForm.repaymentFreq,
         weeklyDue: overrideDue,
         isOngoing: renewForm.isOngoing,
@@ -450,13 +461,23 @@ export const BorrowersTab: React.FC<BorrowersTabProps> = ({
 
   const renewPreviewPeriods = Math.max(1, parseInt(renewForm.durationWeeks, 10) || 12);
   const renewOverrideVal = parseInt(renewForm.weeklyOverride, 10) || 0;
-  const renewPreviewTotalInput = Math.max(0, parseInt(renewForm.totalPayable, 10) || 0);
-  const renewPreviewDue =
-    renewOverrideVal > 0
-      ? renewOverrideVal
-      : calculateInstallmentDueFromTotal(renewPreviewTotalInput, renewPreviewPeriods);
-  const renewPreviewTotal =
-    renewOverrideVal > 0 ? renewPreviewDue * renewPreviewPeriods : renewPreviewTotalInput;
+  const renewAutoResolved = resolveLoanTermsByMode({
+    mode: loanEntryMode,
+    loanAmtInput: parseInt(renewForm.loanAmt, 10) || 0,
+    interestPctInput: parseFloat(renewForm.interestPct) || 0,
+    totalPayableInput: parseInt(renewForm.totalPayable, 10) || 0,
+    periods: renewPreviewPeriods,
+  });
+  const renewPreviewResolved = resolveLoanTermsByMode({
+    mode: loanEntryMode,
+    loanAmtInput: parseInt(renewForm.loanAmt, 10) || 0,
+    interestPctInput: parseFloat(renewForm.interestPct) || 0,
+    totalPayableInput: parseInt(renewForm.totalPayable, 10) || 0,
+    periods: renewPreviewPeriods,
+    weeklyOverride: renewOverrideVal,
+  });
+  const renewPreviewDue = renewPreviewResolved.weeklyDue;
+  const renewPreviewTotal = renewPreviewResolved.totalReturn;
 
   return (
     <>
@@ -1447,22 +1468,39 @@ export const BorrowersTab: React.FC<BorrowersTabProps> = ({
                 ))}
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                    {lang === "te" ? "కొత్త అప్పు (₹)" : "New Loan (₹)"}
-                  </label>
-                  <input
-                    type="number"
-                    required
-                    value={renewForm.loanAmt}
-                    onChange={(e) => setRenewForm((f) => ({ ...f, loanAmt: e.target.value }))}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-bold text-slate-900 dark:text-slate-100 tabular-nums"
-                  />
+              {loanEntryMode === "principal_interest" ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      {lang === "te" ? "కొత్త అప్పు (₹)" : "New Loan (₹)"}
+                    </label>
+                    <input
+                      type="number"
+                      required
+                      value={renewForm.loanAmt}
+                      onChange={(e) => setRenewForm((f) => ({ ...f, loanAmt: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-bold text-slate-900 dark:text-slate-100 tabular-nums"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      {lang === "te" ? "వడ్డీ % *" : "Interest % *"}
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.5"
+                      required
+                      value={renewForm.interestPct}
+                      onChange={(e) => setRenewForm((f) => ({ ...f, interestPct: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-bold text-slate-900 dark:text-slate-100 tabular-nums"
+                    />
+                  </div>
                 </div>
+              ) : loanEntryMode === "total_only" ? (
                 <div>
                   <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                    {lang === "te" ? "చెల్లించాల్సిన మొత్తం (₹) *" : "Total to Pay (₹) *"}
+                    {lang === "te" ? "చెల్లించాల్సిన మొత్తం (₹) *" : "Total Amount to Pay (₹) *"}
                   </label>
                   <input
                     type="number"
@@ -1473,7 +1511,35 @@ export const BorrowersTab: React.FC<BorrowersTabProps> = ({
                     className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-bold text-slate-900 dark:text-slate-100 tabular-nums"
                   />
                 </div>
-              </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      {lang === "te" ? "కొత్త అప్పు (₹)" : "New Loan (₹)"}
+                    </label>
+                    <input
+                      type="number"
+                      required
+                      value={renewForm.loanAmt}
+                      onChange={(e) => setRenewForm((f) => ({ ...f, loanAmt: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-bold text-slate-900 dark:text-slate-100 tabular-nums"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      {lang === "te" ? "చెల్లించాల్సిన మొత్తం (₹) *" : "Total to Pay (₹) *"}
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      required
+                      value={renewForm.totalPayable}
+                      onChange={(e) => setRenewForm((f) => ({ ...f, totalPayable: e.target.value }))}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-bold text-slate-900 dark:text-slate-100 tabular-nums"
+                    />
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
@@ -1496,7 +1562,7 @@ export const BorrowersTab: React.FC<BorrowersTabProps> = ({
                   </label>
                   <input
                     type="number"
-                    placeholder={`Auto ${formatCurrency(renewPreviewDue)}`}
+                    placeholder={`Auto ${formatCurrency(renewAutoResolved.weeklyDue)}`}
                     value={renewForm.weeklyOverride}
                     onChange={(e) =>
                       setRenewForm((f) => ({ ...f, weeklyOverride: e.target.value }))

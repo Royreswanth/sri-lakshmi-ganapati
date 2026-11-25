@@ -10,6 +10,7 @@ import type {
   DailyCashbookSummary,
   CashbookVillageBreakdown,
   RepaymentFrequency,
+  LoanEntryMode,
   PaymentMethod,
   PastLoanCycle,
   Language,
@@ -54,6 +55,69 @@ export function computeImpliedInterestPct(
 ): number {
   if (!loanAmt || loanAmt <= 0 || !totalReturn || totalReturn <= loanAmt) return 0;
   return Number((((totalReturn - loanAmt) / loanAmt) * 100).toFixed(2));
+}
+
+export interface ResolvedLoanTerms {
+  loanAmt: number;
+  interestPct: number;
+  weeklyDue: number;
+  totalReturn: number;
+  periods: number;
+}
+
+/**
+ * Resolves loan principal, interest %, installment due, and total repayable
+ * according to the lender's configured LoanEntryMode:
+ * 1. "principal_interest": Loan Amount + Interest % + Installments (+ optional Override)
+ * 2. "principal_total":    Loan Amount + Total Amount to Pay + Installments (+ optional Override)
+ * 3. "total_only":         Total Amount to Pay + Installments (+ optional Override)
+ */
+export function resolveLoanTermsByMode(params: {
+  mode?: LoanEntryMode;
+  loanAmtInput?: number;
+  interestPctInput?: number;
+  totalPayableInput?: number;
+  periods: number;
+  weeklyOverride?: number;
+}): ResolvedLoanTerms {
+  const mode: LoanEntryMode = params.mode || "principal_total";
+  const periods = Math.max(1, Math.round(Number(params.periods) || 12));
+  const overrideDue = Math.max(0, Math.round(Number(params.weeklyOverride) || 0));
+
+  if (mode === "principal_interest") {
+    const loanAmt = Math.max(0, Math.round(Number(params.loanAmtInput) || 0));
+    const enteredPct = Math.max(0, Number(params.interestPctInput) || 0);
+    const autoDue = calculateInstallmentDue(loanAmt, enteredPct, periods);
+    const weeklyDue = overrideDue > 0 ? overrideDue : autoDue;
+    const totalReturn = weeklyDue * periods;
+    const interestPct =
+      overrideDue > 0 ? computeImpliedInterestPct(loanAmt, totalReturn) : enteredPct;
+    return { loanAmt, interestPct, weeklyDue, totalReturn, periods };
+  }
+
+  if (mode === "total_only") {
+    const rawTotal = Math.max(0, Math.round(Number(params.totalPayableInput) || 0));
+    const autoDue = calculateInstallmentDueFromTotal(rawTotal, periods);
+    const weeklyDue = overrideDue > 0 ? overrideDue : autoDue;
+    const totalReturn = overrideDue > 0 ? weeklyDue * periods : rawTotal;
+    return {
+      loanAmt: totalReturn,
+      interestPct: 0,
+      weeklyDue,
+      totalReturn,
+      periods,
+    };
+  }
+
+  // Default: "principal_total"
+  const loanAmt = Math.max(0, Math.round(Number(params.loanAmtInput) || 0));
+  const rawTotal = Math.max(0, Math.round(Number(params.totalPayableInput) || 0));
+  const autoDue = calculateInstallmentDueFromTotal(rawTotal, periods);
+  const weeklyDue = overrideDue > 0 ? overrideDue : autoDue;
+  const totalReturn = overrideDue > 0 ? weeklyDue * periods : rawTotal;
+  const interestPct = computeImpliedInterestPct(loanAmt, totalReturn);
+
+  return { loanAmt, interestPct, weeklyDue, totalReturn, periods };
 }
 
 export function calculateWeeklyDue(

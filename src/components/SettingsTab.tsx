@@ -38,6 +38,7 @@ import {
   Ban,
   BookOpen,
   Calendar,
+  Calculator,
 } from "lucide-react";
 import {
   Village,
@@ -49,6 +50,7 @@ import {
   WhatsAppRules,
   DayOfWeek,
   CloudLicenseRecord,
+  LoanEntryMode,
 } from "../types";
 import { translations } from "../translations";
 import { ALL_DAYS_MON_FIRST, translateDayName } from "../utils/dateUtils";
@@ -102,7 +104,8 @@ export type SettingsSection =
   | "villages"
   | "backup"
   | "subscription"
-  | "whatsapp";
+  | "whatsapp"
+  | "loan_entry";
 
 interface SettingsTabProps {
   pin: string;
@@ -723,6 +726,10 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 ? lang === "te"
                   ? "లైన్ గ్రామాలు"
                   : "Line Villages"
+                : activeSection === "loan_entry"
+                ? lang === "te"
+                  ? "లోన్ నమోదు విధానం"
+                  : "Loan Entry Method"
                 : lang === "te"
                 ? "వ్యాపార ప్రొఫైల్ & లోగో"
                 : "Business Profile & Logo"}
@@ -944,6 +951,43 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
                 : "Disabled"}
             </button>
           </div>
+
+          {/* Loan Entry Method (3 Types) */}
+          <button
+            type="button"
+            onClick={() => setActiveSection("loan_entry")}
+            className="text-left min-h-[72px] rounded-2xl p-4 bg-white dark:bg-[#131B2E] border border-slate-200 dark:border-slate-800/90 shadow-sm flex items-center justify-between gap-3 cursor-pointer hover:border-indigo-500 transition-all"
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400 flex items-center justify-center shrink-0">
+                <Calculator className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">
+                  {lang === "te" ? "లోన్ నమోదు విధానం" : "Loan Entry Method"}
+                </h4>
+                <p className="text-xs text-slate-600 dark:text-slate-400 truncate">
+                  {(profile.loanEntryMode || "principal_total") === "principal_interest"
+                    ? lang === "te"
+                      ? "అసలు + వడ్డీ % + వారాలు"
+                      : "Loan Amount + Interest % + Weeks"
+                    : (profile.loanEntryMode || "principal_total") === "total_only"
+                    ? lang === "te"
+                      ? "చెల్లించాల్సిన మొత్తం + వారాలు మాత్రమే"
+                      : "Total Amount to Pay + Weeks Only"
+                    : lang === "te"
+                    ? "అసలు + చెల్లించాల్సిన మొత్తం + వారాలు"
+                    : "Loan Amount + Total to Pay + Weeks"}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60">
+                {lang === "te" ? "మార్చండి" : "Choose"}
+              </span>
+              <span className="text-slate-400">›</span>
+            </div>
+          </button>
 
           {/* WhatsApp Rules & Automation */}
           <button
@@ -2516,6 +2560,121 @@ export const SettingsTab: React.FC<SettingsTabProps> = ({
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* LOAN ENTRY METHOD (3 MODES) */}
+      {activeSection === "loan_entry" && (
+        <div className="space-y-4">
+          <div className="rounded-3xl p-5 bg-white dark:bg-[#131B2E] border border-indigo-200 dark:border-indigo-800/60 space-y-3 shadow-sm">
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-xl bg-indigo-100 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 flex items-center justify-center shrink-0">
+                <Calculator className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-black text-base text-slate-900 dark:text-slate-100">
+                  {lang === "te"
+                    ? "కొత్త లోన్ నమోదు విధానాన్ని ఎంచుకోండి"
+                    : "Choose Loan Entry Method"}
+                </h3>
+                <p className="text-xs text-slate-600 dark:text-slate-400">
+                  {lang === "te"
+                    ? "కొత్త ఖాతాదారుని లేదా రెన్యువల్ చేసేటప్పుడు ఏ బాక్స్‌లు కనిపించాలో ఇక్కడ ఎంచుకోండి."
+                    : "Choose how you enter loan amounts when adding a borrower or renewing a loan."}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-3 pt-1">
+              {(
+                [
+                  {
+                    id: "principal_interest" as LoanEntryMode,
+                    badge: lang === "te" ? "విధానం 1 (పాతది)" : "Method 1 · Interest %",
+                    titleEn: "Loan Amount + Interest % + Weeks",
+                    titleTe: "అసలు మొత్తం + వడ్డీ % + వారాలు",
+                    descEn:
+                      "Enter principal loan amount, interest percentage (e.g. 20%), and weeks. Auto-calculates weekly due.",
+                    descTe:
+                      "ఇచ్చిన అప్పు, వడ్డీ శాతం (ఉదా. 20%) మరియు వారాలు నమోదు చేయండి. వాయిదా ఆటోమేటిక్‌గా వస్తుంది.",
+                    example: "₹10,000 + 20% + 12 Wks → ₹1,000/wk",
+                  },
+                  {
+                    id: "principal_total" as LoanEntryMode,
+                    badge: lang === "te" ? "విధానం 2 (ప్రస్తుతం)" : "Method 2 · Principal & Total",
+                    titleEn: "Loan Amount + Total Amount to Pay + Weeks",
+                    titleTe: "అసలు మొత్తం + చెల్లించాల్సిన మొత్తం + వారాలు",
+                    descEn:
+                      "Enter principal given and total repayable amount + weeks (no Interest % shown on screen).",
+                    descTe:
+                      "ఇచ్చిన అప్పు మరియు తిరిగి చెల్లించాల్సిన మొత్తం + వారాలు నమోదు చేయండి (వడ్డీ % కనిపించదు).",
+                    example: "₹10,000 + ₹12,000 + 12 Wks → ₹1,000/wk",
+                  },
+                  {
+                    id: "total_only" as LoanEntryMode,
+                    badge: lang === "te" ? "విధానం 3 (సులభం)" : "Method 3 · Total & Weeks Only",
+                    titleEn: "Total Amount to Pay + Weeks Only",
+                    titleTe: "చెల్లించాల్సిన మొత్తం + వారాలు మాత్రమే",
+                    descEn:
+                      "Fastest entry: only enter the total amount borrower should pay back and weeks (no Loan Amount or Interest %).",
+                    descTe:
+                      "చాలా సులభం: ఖాతాదారుడు తిరిగి కట్టాల్సిన మొత్తం మరియు వారాలు మాత్రమే నమోదు చేయండి.",
+                    example: "₹12,000 + 12 Wks → ₹1,000/wk",
+                  },
+                ] as const
+              ).map((opt) => {
+                const currentMode: LoanEntryMode = profile.loanEntryMode || "principal_total";
+                const isSelected = currentMode === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => {
+                      onUpdateProfile({ ...profile, loanEntryMode: opt.id });
+                      showToast(
+                        lang === "te"
+                          ? `${opt.titleTe} సేవ్ అయింది ✓`
+                          : `Loan entry set to: ${opt.titleEn} ✓`,
+                        "success"
+                      );
+                    }}
+                    className={`w-full text-left rounded-2xl p-4 border-2 transition-all cursor-pointer space-y-2 ${
+                      isSelected
+                        ? "bg-indigo-50/80 dark:bg-indigo-950/40 border-indigo-600 dark:border-indigo-400 shadow-sm"
+                        : "bg-slate-50/70 dark:bg-slate-900/50 border-slate-200 dark:border-slate-800 hover:border-indigo-300 dark:hover:border-indigo-700"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                          isSelected
+                            ? "bg-indigo-600 text-white"
+                            : "bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300"
+                        }`}
+                      >
+                        {opt.badge}
+                      </span>
+                      {isSelected && (
+                        <span className="inline-flex items-center gap-1 text-xs font-black text-indigo-700 dark:text-indigo-300">
+                          <CheckCircle2 className="w-4 h-4" />
+                          {lang === "te" ? "ఎంచుకోబడింది" : "Selected"}
+                        </span>
+                      )}
+                    </div>
+                    <div className="font-black text-sm text-slate-900 dark:text-slate-100">
+                      {lang === "te" ? opt.titleTe : opt.titleEn}
+                    </div>
+                    <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                      {lang === "te" ? opt.descTe : opt.descEn}
+                    </p>
+                    <div className="inline-block px-2.5 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] font-mono font-bold text-slate-800 dark:text-slate-200">
+                      {opt.example}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 

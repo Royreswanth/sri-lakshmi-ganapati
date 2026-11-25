@@ -66,6 +66,7 @@ export const DEFAULT_PROFILE: BusinessProfile = {
   lineDaysConfigured: false,
   enableDailyCashbook: true,
   lineCycleWeeks: 12,
+  loanEntryMode: "principal_total",
 };
 
 export interface BackupPayload {
